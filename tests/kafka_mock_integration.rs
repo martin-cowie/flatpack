@@ -77,10 +77,6 @@ impl MockKafka {
                 [kafka]
                 brokers = "{brokers}"
                 default_topic = "{TOPIC}"
-
-                [[users]]
-                username = "{USERNAME}"
-                password = "{PASSWORD}"
             "#,
             brokers = self.cluster.bootstrap_servers(),
         ))

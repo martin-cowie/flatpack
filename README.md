@@ -14,8 +14,8 @@ uploaded files to [Kafka](https://kafka.apache.org/) on request.
 
 ## Configuration
 
-Users and Kafka settings are defined in `config.toml`, which is not committed to this repository
-(it's listed in `.gitignore` since it holds plaintext passwords). Copy the example to get started:
+Kafka settings are defined in `config.toml`, which is not committed to this repository
+(it's listed in `.gitignore`). Copy the example to get started:
 
 ```sh
 cp config.toml.example config.toml
@@ -26,17 +26,9 @@ cp config.toml.example config.toml
 brokers = "localhost:9092,otherhost:9092"
 default_topic = "rust-topic"
 message_timeout_ms = 5000
-
-[[users]]
-username = "alice"
-password = "changeme"
-
-[[users]]
-username = "bob"
-password = "changeme"
 ```
 
-Edit `config.toml` to set your own usernames, passwords and Kafka settings. The `[kafka]` table is
+Edit `config.toml` to set your own Kafka settings. The `[kafka]` table is
 required:
 
 | Field | Required | Meaning |

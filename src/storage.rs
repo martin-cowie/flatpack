@@ -8,7 +8,7 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 use unftp_core::{
-    auth::DefaultUser,
+    auth::UserDetail,
     storage::{Error, ErrorKind, Fileinfo, Metadata, StorageBackend},
 };
 
@@ -69,12 +69,12 @@ impl MemStorage {
 }
 
 #[async_trait]
-impl StorageBackend<DefaultUser> for MemStorage {
+impl<U: UserDetail> StorageBackend<U> for MemStorage {
     type Metadata = MemMetadata;
 
     async fn metadata<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         path: P,
     ) -> Result<MemMetadata, Error> {
         let key = Self::normalize(path.as_ref());
@@ -101,7 +101,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn list<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         path: P,
     ) -> Result<Vec<Fileinfo<PathBuf, MemMetadata>>, Error> {
         let key = Self::normalize(path.as_ref());
@@ -128,7 +128,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn get<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         path: P,
         start_pos: u64,
     ) -> Result<Box<dyn AsyncRead + Send + Sync + Unpin>, Error> {
@@ -148,7 +148,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn put<P, R>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         mut input: R,
         path: P,
         _start_pos: u64,
@@ -176,7 +176,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn del<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         path: P,
     ) -> Result<(), Error> {
         let key = Self::normalize(path.as_ref());
@@ -193,7 +193,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn mkd<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         _path: P,
     ) -> Result<(), Error> {
         Err(Error::new(
@@ -204,7 +204,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn rename<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         from: P,
         to: P,
     ) -> Result<(), Error> {
@@ -225,7 +225,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn rmd<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         _path: P,
     ) -> Result<(), Error> {
         Err(Error::new(
@@ -236,7 +236,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn cwd<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         path: P,
     ) -> Result<(), Error> {
         let key = Self::normalize(path.as_ref());
@@ -254,6 +254,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unftp_core::auth::DefaultUser;
 
     fn user() -> DefaultUser {
         DefaultUser

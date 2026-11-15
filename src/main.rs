@@ -2,7 +2,7 @@ mod auth;
 mod kafka;
 mod storage;
 
-use auth::TomlAuthenticator;
+use auth::KafkaAuthenticator;
 use clap::Parser;
 use kafka::{KafkaConfig, KafkaSendHandler};
 use libunftp::ServerBuilder;
@@ -27,8 +27,6 @@ async fn main() -> std::process::ExitCode {
         .fuse();
     let logger = slog::Logger::root(drain, o!());
 
-    let authenticator =
-        TomlAuthenticator::from_file("config.toml").expect("Failed to load config.toml");
     let kafka_config = match KafkaConfig::from_file("config.toml") {
         Ok(config) => config,
         Err(e) => {
@@ -37,10 +35,14 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
+    let authenticator = KafkaAuthenticator::new(kafka_config.clone());
+    let user_detail_provider = authenticator.user_detail_provider();
+
     let server = match ServerBuilder::with_authenticator(
         Box::new(MemStorage::new),
         Arc::new(authenticator),
     )
+    .user_detail_provider(Arc::new(user_detail_provider))
     .greeting("This is a test FTP server")
     .passive_ports(50000..=65535)
     .site_command("send", KafkaSendHandler::new(kafka_config))

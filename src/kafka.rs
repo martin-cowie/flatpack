@@ -1,29 +1,93 @@
 use async_trait::async_trait;
 use clap::Parser;
 use libunftp::options::{Reply, ReplyCode, SiteCommandContext, SiteCommandHandler};
-use rdkafka::config::ClientConfig;
 use rdkafka::message::{Header, OwnedHeaders};
-use rdkafka::producer::{FutureProducer, FutureRecord};
+use rdkafka::producer::FutureRecord;
 use serde::Deserialize;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
-use unftp_core::auth::DefaultUser;
 use unftp_core::storage::StorageBackend;
 
+use crate::auth::KafkaUser;
 use crate::storage::MemStorage;
 
 // MARK: Config
 
 /// Kafka settings, loaded from the required `[kafka]` table in `config.toml`.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "RawKafkaConfig")]
 pub struct KafkaConfig {
     /// Comma-separated `host:port` list, passed to librdkafka as `bootstrap.servers`.
     pub brokers: String,
     /// Topic used when `SITE SEND` has no `--topic`.
     pub default_topic: String,
-    /// How long to wait for a message's delivery; 5000 when left out.
-    #[serde(default = "KafkaConfig::default_message_timeout_ms")]
+    /// How long to wait for a message's delivery.
     pub message_timeout_ms: u64,
+    /// How long a login waits for the cluster to accept or reject the credentials.
+    pub auth_timeout_ms: u64,
+    /// How the bridge talks to the cluster.
+    #[allow(dead_code)]
+    pub security_protocol: SecurityProtocol,
+    /// SASL mechanism; present exactly when `security_protocol` is `SASL_PLAINTEXT`.
+    #[allow(dead_code)]
+    pub sasl_mechanism: Option<SaslMechanism>,
+}
+
+/// The librdkafka `security.protocol` values the bridge supports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+pub enum SecurityProtocol {
+    #[default]
+    #[serde(rename = "PLAINTEXT")]
+    Plaintext,
+    #[serde(rename = "SASL_PLAINTEXT")]
+    SaslPlaintext,
+
+    //TODO SSL/TLS editions of both of these - see https://docs.confluent.io/platform/current/clients/librdkafka/html/md_CONFIGURATION.html
+}
+
+/// The librdkafka `sasl.mechanism` values the bridge supports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum SaslMechanism {
+    #[serde(rename = "PLAIN")]
+    Plain,
+    #[serde(rename = "SCRAM-SHA-256")]
+    ScramSha256,
+    #[serde(rename = "SCRAM-SHA-512")]
+    ScramSha512,
+
+    //TODO: GSSAPI and OAUTHBEARER
+}
+
+/// The `[kafka]` table as written, before cross-field validation.
+#[derive(Debug, Deserialize)]
+struct RawKafkaConfig {
+    brokers: String,
+    default_topic: String,
+    #[serde(default = "KafkaConfig::default_message_timeout_ms")]
+    message_timeout_ms: u64,
+    #[serde(default = "KafkaConfig::default_auth_timeout_ms")]
+    auth_timeout_ms: u64,
+    #[serde(default)]
+    security_protocol: SecurityProtocol,
+    sasl_mechanism: Option<SaslMechanism>,
+}
+
+impl TryFrom<RawKafkaConfig> for KafkaConfig {
+    type Error = String;
+
+    fn try_from(raw: RawKafkaConfig) -> Result<Self, Self::Error> {
+        if raw.security_protocol == SecurityProtocol::SaslPlaintext && raw.sasl_mechanism.is_none() {
+            return Err("sasl_mechanism is required when security_protocol is SASL_PLAINTEXT".to_string());
+        }
+        Ok(KafkaConfig {
+            brokers: raw.brokers,
+            default_topic: raw.default_topic,
+            message_timeout_ms: raw.message_timeout_ms,
+            auth_timeout_ms: raw.auth_timeout_ms,
+            security_protocol: raw.security_protocol,
+            sasl_mechanism: raw.sasl_mechanism,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,6 +103,10 @@ impl KafkaConfig {
     }
 
     fn default_message_timeout_ms() -> u64 {
+        5000
+    }
+
+    fn default_auth_timeout_ms() -> u64 {
         5000
     }
 }
@@ -112,8 +180,8 @@ impl KafkaSendHandler {
 }
 
 #[async_trait]
-impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
-    async fn handle(&self, context: &SiteCommandContext<MemStorage, DefaultUser>) -> Reply {
+impl SiteCommandHandler<MemStorage, KafkaUser> for KafkaSendHandler {
+    async fn handle(&self, context: &SiteCommandContext<MemStorage, KafkaUser>) -> Reply {
         // Get and verify arguments
         let args = match SendArgs::parse(&context.arguments) {
             Ok(args) => args,
@@ -126,21 +194,7 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
             return Reply::new(ReplyCode::NotLoggedIn, "Not logged in");
         };
 
-        // Connect to Kafka
-        let producer: FutureProducer = match ClientConfig::new()
-            .set("bootstrap.servers", &self.config.brokers)
-            .set("message.timeout.ms", self.config.message_timeout_ms.to_string())
-            .create()
-        {
-            Ok(producer) => producer,
-            Err(e) => {
-                return Reply::new(
-                    ReplyCode::LocalError,
-                    &format!("Cannot connect to Kafka brokers {}: {}", self.config.brokers, e),
-                );
-            }
-        };
-        slog::info!(context.logger, "Connected to {}", self.config.brokers);
+        let producer = &user.producer;
 
         // Send each file as a discrete message
         let mut results = Vec::new();
@@ -194,12 +248,22 @@ impl SiteCommandHandler<MemStorage, DefaultUser> for KafkaSendHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rdkafka::config::ClientConfig;
     use rdkafka::message::Headers;
+    use rdkafka::producer::FutureProducer;
     use std::sync::Arc;
 
     use crate::storage::MemStorage;
 
-    fn context(arguments: &str, user: Option<DefaultUser>, storage: MemStorage) -> SiteCommandContext<MemStorage, DefaultUser> {
+    fn session_user() -> KafkaUser {
+        let producer: FutureProducer = ClientConfig::new()
+            .set("bootstrap.servers", "127.0.0.1:1")
+            .create()
+            .unwrap();
+        KafkaUser { username: "alice".to_string(), producer }
+    }
+
+    fn context(arguments: &str, user: Option<KafkaUser>, storage: MemStorage) -> SiteCommandContext<MemStorage, KafkaUser> {
         SiteCommandContext {
             command: "SEND".to_string(),
             arguments: arguments.to_string(),
@@ -215,6 +279,9 @@ mod tests {
             brokers: "localhost:9092".to_string(),
             default_topic: "test-topic".to_string(),
             message_timeout_ms: 5000,
+            auth_timeout_ms: 5000,
+            security_protocol: SecurityProtocol::Plaintext,
+            sasl_mechanism: None,
         }
     }
 
@@ -239,7 +306,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_reports_missing_files_per_name_without_a_reachable_broker() {
-        let ctx = context("missing.txt", Some(DefaultUser), MemStorage::new());
+        let ctx = context("missing.txt", Some(session_user()), MemStorage::new());
         let reply = KafkaSendHandler::new(config()).handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::LocalError));
     }
@@ -305,6 +372,82 @@ mod tests {
     }
 
     #[test]
+    fn kafka_config_security_protocol_defaults_to_plaintext() {
+        let config: ConfigFile = toml::from_str(
+            r#"
+                [kafka]
+                brokers = "my-broker:9092"
+                default_topic = "custom-topic"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.kafka.security_protocol, SecurityProtocol::Plaintext);
+    }
+
+    #[test]
+    fn kafka_config_auth_timeout_defaults_to_5000_and_can_be_overridden() {
+        let default: ConfigFile = toml::from_str(
+            r#"
+                [kafka]
+                brokers = "my-broker:9092"
+                default_topic = "custom-topic"
+            "#,
+        )
+        .unwrap();
+        let overridden: ConfigFile = toml::from_str(
+            r#"
+                [kafka]
+                brokers = "my-broker:9092"
+                default_topic = "custom-topic"
+                auth_timeout_ms = 1500
+            "#,
+        )
+        .unwrap();
+        assert_eq!(default.kafka.auth_timeout_ms, 5000);
+        assert_eq!(overridden.kafka.auth_timeout_ms, 1500);
+    }
+
+    #[test]
+    fn kafka_config_rejects_unsupported_security_protocols_and_mechanisms() {
+        for (protocol, mechanism) in [
+            ("SSL", "PLAIN"),
+            ("SASL_SSL", "PLAIN"),
+            ("SASL_PLAINTEXT", "GSSAPI"),
+            ("SASL_PLAINTEXT", "OAUTHBEARER"),
+        ] {
+            let result = toml::from_str::<ConfigFile>(&format!(
+                "[kafka]\nbrokers = \"b:9092\"\ndefault_topic = \"t\"\nsecurity_protocol = \"{protocol}\"\nsasl_mechanism = \"{mechanism}\"\n"
+            ));
+            assert!(result.is_err(), "{protocol} with {mechanism} should be rejected");
+        }
+    }
+
+    #[test]
+    fn kafka_config_accepts_each_supported_sasl_mechanism() {
+        for mechanism in ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"] {
+            let config: ConfigFile = toml::from_str(&format!(
+                "[kafka]\nbrokers = \"b:9092\"\ndefault_topic = \"t\"\nsecurity_protocol = \"SASL_PLAINTEXT\"\nsasl_mechanism = \"{mechanism}\"\n"
+            ))
+            .unwrap();
+            assert!(config.kafka.sasl_mechanism.is_some(), "{mechanism}");
+        }
+    }
+
+    #[test]
+    fn kafka_config_sasl_plaintext_requires_a_sasl_mechanism() {
+        let err = toml::from_str::<ConfigFile>(
+            r#"
+                [kafka]
+                brokers = "my-broker:9092"
+                default_topic = "custom-topic"
+                security_protocol = "SASL_PLAINTEXT"
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("sasl_mechanism"), "{err}");
+    }
+
+    #[test]
     fn kafka_config_from_file_reads_the_kafka_table() {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         std::io::Write::write_all(
@@ -313,10 +456,6 @@ mod tests {
                 [kafka]
                 brokers = "my-broker:9092"
                 default_topic = "custom-topic"
-
-                [[users]]
-                username = "alice"
-                password = "password123"
             "#,
         )
         .unwrap();

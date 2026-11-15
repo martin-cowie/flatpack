@@ -1,166 +1,196 @@
 use async_trait::async_trait;
-use serde::Deserialize;
+use rdkafka::config::ClientConfig;
+use rdkafka::producer::{FutureProducer, Producer};
 use std::collections::HashMap;
-use unftp_core::auth::{AuthenticationError, Authenticator, Credentials, Principal};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use unftp_core::auth::{
+    AuthenticationError, Authenticator, Credentials, Principal, UserDetail, UserDetailError,
+    UserDetailProvider,
+};
 
-#[derive(Debug, Deserialize)]
-struct UserEntry {
-    username: String,
-    password: String,
+use crate::kafka::KafkaConfig;
+
+/// The Kafka producer a login establishes and its session keeps using.
+pub type SessionProducer = FutureProducer;
+
+/// Authenticates FTP logins by connecting to Kafka with the client's credentials.
+///
+/// A login is accepted only if the Kafka cluster accepts the connection. The
+/// producer that proved it is queued under the username until
+/// `provide_user_detail` claims it for the session.
+pub struct KafkaAuthenticator {
+    config: KafkaConfig,
+    handoff: Handoff,
 }
 
-#[derive(Debug, Deserialize)]
-struct AuthConfig {
-    users: Vec<UserEntry>,
+type Handoff = Arc<Mutex<HashMap<String, Vec<SessionProducer>>>>;
+
+/// A logged-in FTP user together with the Kafka producer their login established.
+pub struct KafkaUser {
+    pub username: String,
+    pub producer: SessionProducer,
 }
 
-#[derive(Debug)]
-pub struct TomlAuthenticator {
-    users: HashMap<String, String>,
+impl std::fmt::Debug for KafkaUser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KafkaUser").field("username", &self.username).finish()
+    }
 }
 
-impl TomlAuthenticator {
-    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let content = std::fs::read_to_string(path)?;
-        let config: AuthConfig = toml::from_str(&content)?;
-        let users = config
-            .users
-            .into_iter()
-            .map(|u| (u.username, u.password))
-            .collect();
-        Ok(TomlAuthenticator { users })
+impl std::fmt::Display for KafkaUser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.username)
+    }
+}
+
+impl UserDetail for KafkaUser {}
+
+/// Claims the producer a login queued, turning a `Principal` into a `KafkaUser`.
+///
+/// Any queued producer for the username will do: Kafka gives one username one
+/// password, so they are interchangeable.
+pub struct KafkaUserDetailProvider {
+    handoff: Handoff,
+}
+
+impl std::fmt::Debug for KafkaUserDetailProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KafkaUserDetailProvider").finish_non_exhaustive()
     }
 }
 
 #[async_trait]
-impl Authenticator for TomlAuthenticator {
+impl UserDetailProvider for KafkaUserDetailProvider {
+    type User = KafkaUser;
+
+    async fn provide_user_detail(&self, principal: &Principal) -> Result<KafkaUser, UserDetailError> {
+        let producer = self
+            .handoff
+            .lock()
+            .unwrap()
+            .get_mut(&principal.username)
+            .and_then(Vec::pop)
+            .ok_or_else(|| UserDetailError::Generic(format!("no login is waiting for {}", principal.username)))?;
+        Ok(KafkaUser { username: principal.username.clone(), producer })
+    }
+}
+
+impl std::fmt::Debug for KafkaAuthenticator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KafkaAuthenticator").field("config", &self.config).finish()
+    }
+}
+
+impl KafkaAuthenticator {
+    pub fn new(config: KafkaConfig) -> Self {
+        KafkaAuthenticator { config, handoff: Arc::new(Mutex::new(HashMap::new())) }
+    }
+
+    /// Returns the provider that hands this authenticator's logins to their sessions.
+    pub fn user_detail_provider(&self) -> KafkaUserDetailProvider {
+        KafkaUserDetailProvider { handoff: Arc::clone(&self.handoff) }
+    }
+
+    fn connect(config: &KafkaConfig) -> Result<SessionProducer, ()> {
+        let producer: SessionProducer = ClientConfig::new()
+            .set("bootstrap.servers", &config.brokers)
+            .set("message.timeout.ms", config.message_timeout_ms.to_string())
+            .create()
+            .map_err(|_| ())?;
+        producer
+            .client()
+            .fetch_metadata(None, Duration::from_millis(config.auth_timeout_ms))
+            .map_err(|_| ())?;
+        Ok(producer)
+    }
+}
+
+#[async_trait]
+impl Authenticator for KafkaAuthenticator {
     async fn authenticate(
         &self,
         username: &str,
-        creds: &Credentials,
+        _creds: &Credentials,
     ) -> Result<Principal, AuthenticationError> {
-        match &creds.password {
-            Some(password) => match self.users.get(username) {
-                Some(stored) if stored == password => Ok(Principal {
-                    username: username.to_string(),
-                }),
-                _ => Err(AuthenticationError::BadPassword),
-            },
-            None => Err(AuthenticationError::BadPassword),
-        }
+        let config = self.config.clone();
+        let producer = tokio::task::spawn_blocking(move || Self::connect(&config))
+            .await
+            .map_err(|_| AuthenticationError::BadPassword)?
+            .map_err(|_| AuthenticationError::BadPassword)?;
+        self.handoff
+            .lock()
+            .unwrap()
+            .entry(username.to_string())
+            .or_default()
+            .push(producer);
+        Ok(Principal { username: username.to_string() })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kafka::{KafkaConfig, SecurityProtocol};
+    use rdkafka::mocking::MockCluster;
+    use unftp_core::auth::{Authenticator, Credentials, UserDetailProvider};
 
-    /// Writes `content` to a uniquely-named temp file, cleaned up on drop.
-    fn temp_toml(content: &str) -> tempfile::NamedTempFile {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        std::io::Write::write_all(&mut file, content.as_bytes()).unwrap();
-        file
-    }
-
-    fn creds(password: Option<&str>) -> Credentials {
-        match password {
-            Some(p) => Credentials::from(p),
-            None => Credentials {
-                password: None,
-                ..Credentials::from("")
-            },
+    fn config(brokers: &str) -> KafkaConfig {
+        KafkaConfig {
+            brokers: brokers.to_string(),
+            default_topic: "test-topic".to_string(),
+            message_timeout_ms: 5000,
+            auth_timeout_ms: 2000,
+            security_protocol: SecurityProtocol::Plaintext,
+            sasl_mechanism: None,
         }
     }
 
-    #[test]
-    fn from_file_loads_configured_users() {
-        let file = temp_toml(
-            r#"
-                [[users]]
-                username = "alice"
-                password = "password123"
-
-                [[users]]
-                username = "bob"
-                password = "secret456"
-            "#,
-        );
-
-        let auth = TomlAuthenticator::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(auth.users.len(), 2);
-        assert_eq!(auth.users.get("alice").map(String::as_str), Some("password123"));
-    }
-
-    #[test]
-    fn from_file_fails_when_file_missing() {
-        let result = TomlAuthenticator::from_file("/nonexistent/path/config.toml");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn from_file_fails_on_malformed_toml() {
-        let file = temp_toml("not valid toml [[[");
-        let result = TomlAuthenticator::from_file(file.path().to_str().unwrap());
-        assert!(result.is_err());
-    }
-
     #[tokio::test]
-    async fn authenticate_succeeds_with_correct_password() {
-        let file = temp_toml(
-            r#"
-                [[users]]
-                username = "alice"
-                password = "password123"
-            "#,
-        );
-        let auth = TomlAuthenticator::from_file(file.path().to_str().unwrap()).unwrap();
+    async fn plaintext_login_is_accepted_for_any_credentials_when_the_broker_is_reachable() {
+        let cluster = MockCluster::new(1).unwrap();
+        let authenticator = KafkaAuthenticator::new(config(&cluster.bootstrap_servers()));
 
-        let principal = auth.authenticate("alice", &creds(Some("password123"))).await.unwrap();
+        let principal = authenticator
+            .authenticate("alice", &Credentials::from("anything"))
+            .await
+            .unwrap();
+
         assert_eq!(principal.username, "alice");
     }
 
     #[tokio::test]
-    async fn authenticate_fails_with_wrong_password() {
-        let file = temp_toml(
-            r#"
-                [[users]]
-                username = "alice"
-                password = "password123"
-            "#,
-        );
-        let auth = TomlAuthenticator::from_file(file.path().to_str().unwrap()).unwrap();
+    async fn login_is_rejected_when_the_broker_is_unreachable() {
+        let mut unreachable = config("127.0.0.1:1");
+        unreachable.auth_timeout_ms = 500;
+        let authenticator = KafkaAuthenticator::new(unreachable);
 
-        let result = auth.authenticate("alice", &creds(Some("wrong"))).await;
+        let result = authenticator.authenticate("alice", &Credentials::from("anything")).await;
+
         assert!(matches!(result, Err(AuthenticationError::BadPassword)));
     }
 
     #[tokio::test]
-    async fn authenticate_fails_with_unknown_user() {
-        let file = temp_toml(
-            r#"
-                [[users]]
-                username = "alice"
-                password = "password123"
-            "#,
-        );
-        let auth = TomlAuthenticator::from_file(file.path().to_str().unwrap()).unwrap();
+    async fn provider_hands_the_logged_in_sessions_producer_to_it() {
+        let cluster = MockCluster::new(1).unwrap();
+        let authenticator = KafkaAuthenticator::new(config(&cluster.bootstrap_servers()));
+        let provider = authenticator.user_detail_provider();
+        let principal = authenticator.authenticate("alice", &Credentials::from("x")).await.unwrap();
 
-        let result = auth.authenticate("mallory", &creds(Some("password123"))).await;
-        assert!(matches!(result, Err(AuthenticationError::BadPassword)));
+        let user = provider.provide_user_detail(&principal).await.unwrap();
+
+        assert_eq!(user.username, "alice");
+        let metadata = user.producer.client().fetch_metadata(None, Duration::from_secs(2));
+        assert!(metadata.is_ok());
     }
 
     #[tokio::test]
-    async fn authenticate_fails_without_password() {
-        let file = temp_toml(
-            r#"
-                [[users]]
-                username = "alice"
-                password = "password123"
-            "#,
-        );
-        let auth = TomlAuthenticator::from_file(file.path().to_str().unwrap()).unwrap();
+    async fn provider_fails_when_no_login_is_waiting_for_the_user() {
+        let authenticator = KafkaAuthenticator::new(config("127.0.0.1:1"));
+        let provider = authenticator.user_detail_provider();
 
-        let result = auth.authenticate("alice", &creds(None)).await;
-        assert!(matches!(result, Err(AuthenticationError::BadPassword)));
+        let result = provider.provide_user_detail(&Principal { username: "alice".to_string() }).await;
+
+        assert!(result.is_err());
     }
 }

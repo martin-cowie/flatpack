@@ -17,20 +17,18 @@ fn logs_in_with_correct_credentials() {
 }
 
 #[test]
-fn rejects_wrong_password() {
-    let server = TestServer::start();
+fn rejects_login_when_kafka_is_unreachable() {
+    let server = TestServer::start_with_config(
+        r#"
+            [kafka]
+            brokers = "127.0.0.1:1"
+            default_topic = "rust-topic"
+            auth_timeout_ms = 500
+        "#,
+    );
     let mut client = server.connect();
 
-    let reply = client.login(USERNAME, "wrong-password");
-    assert!(reply.starts_with('5'), "expected a 5xx reply, got: {reply}");
-}
-
-#[test]
-fn rejects_unknown_user() {
-    let server = TestServer::start();
-    let mut client = server.connect();
-
-    let reply = client.login("mallory", PASSWORD);
+    let reply = client.login(USERNAME, PASSWORD);
     assert!(reply.starts_with('5'), "expected a 5xx reply, got: {reply}");
 }
 
@@ -127,9 +125,6 @@ fn second_instance_on_the_same_port_fails_to_start_and_says_why() {
 fn refuses_to_start_without_the_kafka_table() {
     let output = run_until_exit(&format!(
         r#"
-            [[users]]
-            username = "{USERNAME}"
-            password = "{PASSWORD}"
         "#
     ));
 
@@ -145,10 +140,6 @@ fn refuses_to_start_without_brokers() {
         r#"
             [kafka]
             default_topic = "rust-topic"
-
-            [[users]]
-            username = "{USERNAME}"
-            password = "{PASSWORD}"
         "#
     ));
 

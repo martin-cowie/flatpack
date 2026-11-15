@@ -6,6 +6,8 @@
 //! module, since each one only exercises the parts it needs.
 #![allow(dead_code)]
 
+use rdkafka::mocking::MockCluster;
+use rdkafka::producer::DefaultProducerContext;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
@@ -24,6 +26,7 @@ pub const PASSWORD: &str = "password123";
 static ONE_SERVER_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 pub struct TestServer {
+    _kafka: Option<MockCluster<'static, DefaultProducerContext>>,
     child: Child,
     port: u16,
     _dir: tempfile::TempDir,
@@ -31,20 +34,20 @@ pub struct TestServer {
 }
 
 impl TestServer {
-    /// Spawns the server with a `config.toml` for one user, alice, on a free port.
-    /// Kafka points at `localhost:9092` and topic `rust-topic`.
+    /// Spawns the server on a free port, backed by its own in-process mock Kafka
+    /// cluster and the topic `rust-topic`.
     pub fn start() -> Self {
-        Self::start_with_config(&format!(
+        let cluster = MockCluster::new(1).expect("failed to start the mock Kafka cluster");
+        let mut server = Self::start_with_config(&format!(
             r#"
                 [kafka]
-                brokers = "localhost:9092"
+                brokers = "{}"
                 default_topic = "rust-topic"
-
-                [[users]]
-                username = "{USERNAME}"
-                password = "{PASSWORD}"
-            "#
-        ))
+            "#,
+            cluster.bootstrap_servers()
+        ));
+        server._kafka = Some(cluster);
+        server
     }
 
     pub fn start_with_config(config_toml: &str) -> Self {
@@ -64,7 +67,7 @@ impl TestServer {
             .spawn()
             .expect("failed to spawn ftp-server binary");
 
-        let server = TestServer { child, port, _dir: dir, _turn: turn };
+        let server = TestServer { _kafka: None, child, port, _dir: dir, _turn: turn };
         server.wait_until_accepting_connections();
         server
     }

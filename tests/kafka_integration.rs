@@ -49,10 +49,6 @@ async fn site_send_publishes_the_uploaded_file_to_kafka() {
             [kafka]
             brokers = "{brokers}"
             default_topic = "{TOPIC}"
-
-            [[users]]
-            username = "{USERNAME}"
-            password = "{PASSWORD}"
         "#
     ));
     let mut client = server.connect();
