@@ -26,10 +26,8 @@ pub struct KafkaConfig {
     /// How long a login waits for the cluster to accept or reject the credentials.
     pub auth_timeout_ms: u64,
     /// How the bridge talks to the cluster.
-    #[allow(dead_code)]
     pub security_protocol: SecurityProtocol,
     /// SASL mechanism; present exactly when `security_protocol` is `SASL_PLAINTEXT`.
-    #[allow(dead_code)]
     pub sasl_mechanism: Option<SaslMechanism>,
 }
 
@@ -45,6 +43,16 @@ pub enum SecurityProtocol {
     //TODO SSL/TLS editions of both of these - see https://docs.confluent.io/platform/current/clients/librdkafka/html/md_CONFIGURATION.html
 }
 
+impl SecurityProtocol {
+    /// The value librdkafka expects for `security.protocol`.
+    pub fn as_librdkafka(self) -> &'static str {
+        match self {
+            SecurityProtocol::Plaintext => "PLAINTEXT",
+            SecurityProtocol::SaslPlaintext => "SASL_PLAINTEXT",
+        }
+    }
+}
+
 /// The librdkafka `sasl.mechanism` values the bridge supports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum SaslMechanism {
@@ -56,6 +64,17 @@ pub enum SaslMechanism {
     ScramSha512,
 
     //TODO: GSSAPI and OAUTHBEARER
+}
+
+impl SaslMechanism {
+    /// The value librdkafka expects for `sasl.mechanism`.
+    pub fn as_librdkafka(self) -> &'static str {
+        match self {
+            SaslMechanism::Plain => "PLAIN",
+            SaslMechanism::ScramSha256 => "SCRAM-SHA-256",
+            SaslMechanism::ScramSha512 => "SCRAM-SHA-512",
+        }
+    }
 }
 
 /// The `[kafka]` table as written, before cross-field validation.
@@ -250,15 +269,15 @@ mod tests {
     use super::*;
     use rdkafka::config::ClientConfig;
     use rdkafka::message::Headers;
-    use rdkafka::producer::FutureProducer;
-    use std::sync::Arc;
+    use crate::auth::SessionProducer;
+        use std::sync::Arc;
 
     use crate::storage::MemStorage;
 
     fn session_user() -> KafkaUser {
-        let producer: FutureProducer = ClientConfig::new()
+        let producer: SessionProducer = ClientConfig::new()
             .set("bootstrap.servers", "127.0.0.1:1")
-            .create()
+            .create_with_context(crate::auth::AuthContext::default())
             .unwrap();
         KafkaUser { username: "alice".to_string(), producer }
     }

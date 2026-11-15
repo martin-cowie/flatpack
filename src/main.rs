@@ -4,7 +4,7 @@ mod storage;
 
 use auth::KafkaAuthenticator;
 use clap::Parser;
-use kafka::{KafkaConfig, KafkaSendHandler};
+use kafka::{KafkaConfig, KafkaSendHandler, SecurityProtocol};
 use libunftp::ServerBuilder;
 use slog::{o, Drain};
 use std::sync::Arc;
@@ -34,6 +34,13 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+
+    if kafka_config.security_protocol == SecurityProtocol::Plaintext {
+        slog::warn!(
+            logger,
+            "security_protocol is PLAINTEXT: FTP logins are not authenticated, any username and password is accepted"
+        );
+    }
 
     let authenticator = KafkaAuthenticator::new(kafka_config.clone());
     let user_detail_provider = authenticator.user_detail_provider();

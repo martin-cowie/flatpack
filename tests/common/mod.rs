@@ -6,6 +6,8 @@
 //! module, since each one only exercises the parts it needs.
 #![allow(dead_code)]
 
+pub mod sasl_kafka;
+
 use rdkafka::mocking::MockCluster;
 use rdkafka::producer::DefaultProducerContext;
 use std::io::{BufRead, BufReader, Read, Write};

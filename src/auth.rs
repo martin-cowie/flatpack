@@ -1,9 +1,12 @@
 use async_trait::async_trait;
+use rdkafka::client::ClientContext;
 use rdkafka::config::ClientConfig;
+use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::producer::{FutureProducer, Producer};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use unftp_core::auth::{
     AuthenticationError, Authenticator, Credentials, Principal, UserDetail, UserDetailError,
     UserDetailProvider,
@@ -12,7 +15,32 @@ use unftp_core::auth::{
 use crate::kafka::KafkaConfig;
 
 /// The Kafka producer a login establishes and its session keeps using.
-pub type SessionProducer = FutureProducer;
+pub type SessionProducer = FutureProducer<AuthContext>;
+
+/// Remembers whether the broker rejected the credentials.
+///
+/// librdkafka reports a rejected SASL login only through this callback; a metadata
+/// request against such a broker just times out.
+#[derive(Debug, Default)]
+pub struct AuthContext {
+    rejected: Arc<AtomicBool>,
+}
+
+impl ClientContext for AuthContext {
+    fn error(&self, error: KafkaError, _reason: &str) {
+        if let KafkaError::Global(RDKafkaErrorCode::Authentication) = error {
+            self.rejected.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Why a login could not reach a decision in Kafka's favour.
+enum ConnectError {
+    Rejected,
+    Unreachable(String),
+}
+
+const PROBE_SLICE: Duration = Duration::from_millis(100);
 
 /// Authenticates FTP logins by connecting to Kafka with the client's credentials.
 ///
@@ -92,17 +120,33 @@ impl KafkaAuthenticator {
         KafkaUserDetailProvider { handoff: Arc::clone(&self.handoff) }
     }
 
-    fn connect(config: &KafkaConfig) -> Result<SessionProducer, ()> {
-        let producer: SessionProducer = ClientConfig::new()
+    fn connect(config: &KafkaConfig, username: &str, password: &str) -> Result<SessionProducer, ConnectError> {
+        let mut client_config = ClientConfig::new();
+        client_config
             .set("bootstrap.servers", &config.brokers)
             .set("message.timeout.ms", config.message_timeout_ms.to_string())
-            .create()
-            .map_err(|_| ())?;
-        producer
-            .client()
-            .fetch_metadata(None, Duration::from_millis(config.auth_timeout_ms))
-            .map_err(|_| ())?;
-        Ok(producer)
+            .set("security.protocol", config.security_protocol.as_librdkafka());
+        if let Some(mechanism) = config.sasl_mechanism {
+            client_config
+                .set("sasl.mechanism", mechanism.as_librdkafka())
+                .set("sasl.username", username)
+                .set("sasl.password", password);
+        }
+        let context = AuthContext::default();
+        let rejected = Arc::clone(&context.rejected);
+        let producer: SessionProducer = client_config
+            .create_with_context(context)
+            .map_err(|e| ConnectError::Unreachable(e.to_string()))?;
+
+        let deadline = Instant::now() + Duration::from_millis(config.auth_timeout_ms);
+        loop {
+            match producer.client().fetch_metadata(None, PROBE_SLICE) {
+                Ok(_) => return Ok(producer),
+                Err(_) if rejected.load(Ordering::SeqCst) => return Err(ConnectError::Rejected),
+                Err(e) if Instant::now() >= deadline => return Err(ConnectError::Unreachable(e.to_string())),
+                Err(_) => {}
+            }
+        }
     }
 }
 
@@ -111,13 +155,20 @@ impl Authenticator for KafkaAuthenticator {
     async fn authenticate(
         &self,
         username: &str,
-        _creds: &Credentials,
+        creds: &Credentials,
     ) -> Result<Principal, AuthenticationError> {
         let config = self.config.clone();
-        let producer = tokio::task::spawn_blocking(move || Self::connect(&config))
+        let username_owned = username.to_string();
+        let password = creds.password.clone().unwrap_or_default();
+        let producer = tokio::task::spawn_blocking(move || Self::connect(&config, &username_owned, &password))
             .await
-            .map_err(|_| AuthenticationError::BadPassword)?
-            .map_err(|_| AuthenticationError::BadPassword)?;
+            .map_err(|e| AuthenticationError::new(format!("login task failed: {e}")))?
+            .map_err(|e| match e {
+                ConnectError::Rejected => AuthenticationError::BadPassword,
+                ConnectError::Unreachable(reason) => {
+                    AuthenticationError::new(format!("Kafka is unreachable: {reason}"))
+                }
+            })?;
         self.handoff
             .lock()
             .unwrap()
@@ -131,7 +182,7 @@ impl Authenticator for KafkaAuthenticator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kafka::{KafkaConfig, SecurityProtocol};
+    use crate::kafka::{KafkaConfig, SaslMechanism, SecurityProtocol};
     use rdkafka::mocking::MockCluster;
     use unftp_core::auth::{Authenticator, Credentials, UserDetailProvider};
 
@@ -167,7 +218,7 @@ mod tests {
 
         let result = authenticator.authenticate("alice", &Credentials::from("anything")).await;
 
-        assert!(matches!(result, Err(AuthenticationError::BadPassword)));
+        assert!(matches!(result, Err(AuthenticationError::ImplPropagated(..))), "{result:?}");
     }
 
     #[tokio::test]
@@ -192,5 +243,21 @@ mod tests {
         let result = provider.provide_user_detail(&Principal { username: "alice".to_string() }).await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn sasl_login_is_rejected_by_a_broker_that_does_not_speak_sasl() {
+        for mechanism in [SaslMechanism::Plain, SaslMechanism::ScramSha256, SaslMechanism::ScramSha512] {
+            let cluster = MockCluster::new(1).unwrap();
+            let mut sasl = config(&cluster.bootstrap_servers());
+            sasl.security_protocol = SecurityProtocol::SaslPlaintext;
+            sasl.sasl_mechanism = Some(mechanism);
+            sasl.auth_timeout_ms = 1000;
+            let authenticator = KafkaAuthenticator::new(sasl);
+
+            let result = authenticator.authenticate("alice", &Credentials::from("secret")).await;
+
+            assert!(matches!(result, Err(AuthenticationError::BadPassword)), "{mechanism:?}");
+        }
     }
 }

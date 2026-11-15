@@ -5,7 +5,7 @@ uploaded files to [Kafka](https://kafka.apache.org/) on request.
 
 ## Features
 
-- Authentication configured via a TOML file
+- FTP login is checked by Kafka: the FTP username and password are the user's Kafka credentials
 - Greeting message sent to every new session: `This is a test FTP server`
 - Each FTP session gets its own isolated in-memory storage, reset when the session ends
 - Supports upload (`STOR`), download (`RETR`), delete (`DELE`), and rename (`RNFR`/`RNTO`)
@@ -36,8 +36,26 @@ required:
 | `brokers` | Yes | Comma-separated `host:port` list; the server needs only one to be reachable |
 | `default_topic` | Yes | Topic used when `SITE SEND` has no `--topic` |
 | `message_timeout_ms` | No (default `5000`) | How long to wait for a message's delivery |
+| `auth_timeout_ms` | No (default `5000`) | How long a login waits for Kafka to accept or reject the credentials |
+| `security_protocol` | No (default `PLAINTEXT`) | `PLAINTEXT` or `SASL_PLAINTEXT` |
+| `sasl_mechanism` | When `security_protocol` is `SASL_PLAINTEXT` | `PLAIN`, `SCRAM-SHA-256` or `SCRAM-SHA-512` |
 
-The server won't start if `brokers` or `default_topic` is missing.
+The server won't start if `brokers` or `default_topic` is missing, if `sasl_mechanism` is missing under
+`SASL_PLAINTEXT`, or if `security_protocol` or `sasl_mechanism` has any other value.
+
+## Authentication
+
+The server keeps no user accounts. A login succeeds only if the Kafka cluster accepts the username and
+password the FTP client supplies, and the session then publishes to Kafka as that user.
+
+- **`PLAINTEXT`**: the cluster has no authentication, so any username and password is accepted as long
+  as the broker is reachable. The server logs a warning at startup.
+- **`SASL_PLAINTEXT`**: the credentials are sent to Kafka using the configured mechanism. Prefer
+  `SCRAM-SHA-256` or `SCRAM-SHA-512`, which never send the password to Kafka; `PLAIN` does.
+
+Traffic is not encrypted: FTP passwords cross the network in clear text until FTPS is added (#4), and
+Kafka messages are unencrypted until Kafka TLS is. Every login costs a round trip to the broker, and no
+logins succeed while the broker is unreachable.
 
 ## Running
 
