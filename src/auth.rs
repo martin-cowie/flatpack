@@ -63,6 +63,7 @@ const PROBE_SLICE: Duration = Duration::from_millis(100);
 pub struct KafkaAuthenticator {
     config: KafkaConfig,
     handoff: Handoff,
+    logger: slog::Logger,
 }
 
 type Handoff = Arc<Mutex<HashMap<String, Vec<SessionProducer>>>>;
@@ -124,8 +125,8 @@ impl std::fmt::Debug for KafkaAuthenticator {
 }
 
 impl KafkaAuthenticator {
-    pub fn new(config: KafkaConfig) -> Self {
-        KafkaAuthenticator { config, handoff: Arc::new(Mutex::new(HashMap::new())) }
+    pub fn new(config: KafkaConfig, logger: slog::Logger) -> Self {
+        KafkaAuthenticator { config, handoff: Arc::new(Mutex::new(HashMap::new())), logger }
     }
 
     /// Returns the provider that hands this authenticator's logins to their sessions.
@@ -133,7 +134,7 @@ impl KafkaAuthenticator {
         KafkaUserDetailProvider { handoff: Arc::clone(&self.handoff) }
     }
 
-    fn connect(config: &KafkaConfig, username: &str, password: &str) -> Result<SessionProducer, ConnectError> {
+    fn connect(config: &KafkaConfig, logger: &slog::Logger, username: &str, password: &str) -> Result<SessionProducer, ConnectError> {
         let mut client_config = ClientConfig::new();
         client_config
             .set("bootstrap.servers", &config.brokers)
@@ -161,7 +162,7 @@ impl KafkaAuthenticator {
                     let reason = if reasons.is_empty() { e.to_string() } else { reasons.join("; ") };
                     return Err(ConnectError::Unreachable(reason));
                 }
-                Err(_) => {}
+                Err(e) => slog::debug!(logger, "Kafka probe for {} failed, retrying: {}", username, e),
             }
         }
     }
@@ -175,9 +176,10 @@ impl Authenticator for KafkaAuthenticator {
         creds: &Credentials,
     ) -> Result<Principal, AuthenticationError> {
         let config = self.config.clone();
+        let logger = self.logger.clone();
         let username_owned = username.to_string();
         let password = creds.password.clone().unwrap_or_default();
-        let producer = tokio::task::spawn_blocking(move || Self::connect(&config, &username_owned, &password))
+        let producer = tokio::task::spawn_blocking(move || Self::connect(&config, &logger, &username_owned, &password))
             .await
             .map_err(|e| AuthenticationError::new(format!("login task failed: {e}")))?
             .map_err(|e| match e {
@@ -203,6 +205,10 @@ mod tests {
     use rdkafka::mocking::MockCluster;
     use unftp_core::auth::{Authenticator, Credentials, UserDetailProvider};
 
+    fn discard_logger() -> slog::Logger {
+        slog::Logger::root(slog::Discard, slog::o!())
+    }
+
     fn config(brokers: &str) -> KafkaConfig {
         KafkaConfig {
             brokers: brokers.to_string(),
@@ -217,7 +223,7 @@ mod tests {
     #[tokio::test]
     async fn plaintext_login_is_accepted_for_any_credentials_when_the_broker_is_reachable() {
         let cluster = MockCluster::new(1).unwrap();
-        let authenticator = KafkaAuthenticator::new(config(&cluster.bootstrap_servers()));
+        let authenticator = KafkaAuthenticator::new(config(&cluster.bootstrap_servers()), discard_logger());
 
         let principal = authenticator
             .authenticate("alice", &Credentials::from("anything"))
@@ -231,7 +237,7 @@ mod tests {
     async fn login_is_rejected_when_the_broker_is_unreachable() {
         let mut unreachable = config("127.0.0.1:1");
         unreachable.auth_timeout_ms = 500;
-        let authenticator = KafkaAuthenticator::new(unreachable);
+        let authenticator = KafkaAuthenticator::new(unreachable, discard_logger());
 
         let result = authenticator.authenticate("alice", &Credentials::from("anything")).await;
 
@@ -244,7 +250,7 @@ mod tests {
     #[tokio::test]
     async fn provider_hands_the_logged_in_sessions_producer_to_it() {
         let cluster = MockCluster::new(1).unwrap();
-        let authenticator = KafkaAuthenticator::new(config(&cluster.bootstrap_servers()));
+        let authenticator = KafkaAuthenticator::new(config(&cluster.bootstrap_servers()), discard_logger());
         let provider = authenticator.user_detail_provider();
         let principal = authenticator.authenticate("alice", &Credentials::from("x")).await.unwrap();
 
@@ -257,7 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_fails_when_no_login_is_waiting_for_the_user() {
-        let authenticator = KafkaAuthenticator::new(config("127.0.0.1:1"));
+        let authenticator = KafkaAuthenticator::new(config("127.0.0.1:1"), discard_logger());
         let provider = authenticator.user_detail_provider();
 
         let result = provider.provide_user_detail(&Principal { username: "alice".to_string() }).await;
@@ -273,7 +279,7 @@ mod tests {
             sasl.security_protocol = SecurityProtocol::SaslPlaintext;
             sasl.sasl_mechanism = Some(mechanism);
             sasl.auth_timeout_ms = 1000;
-            let authenticator = KafkaAuthenticator::new(sasl);
+            let authenticator = KafkaAuthenticator::new(sasl, discard_logger());
 
             let result = authenticator.authenticate("alice", &Credentials::from("secret")).await;
 

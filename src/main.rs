@@ -42,7 +42,7 @@ async fn main() -> std::process::ExitCode {
         );
     }
 
-    let authenticator = KafkaAuthenticator::new(kafka_config.clone());
+    let authenticator = KafkaAuthenticator::new(kafka_config.clone(), logger.clone());
     let user_detail_provider = authenticator.user_detail_provider();
 
     let server = match ServerBuilder::with_authenticator(
