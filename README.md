@@ -40,6 +40,12 @@ required:
 | `security_protocol` | No (default `PLAINTEXT`) | `PLAINTEXT` or `SASL_PLAINTEXT` |
 | `sasl_mechanism` | When `security_protocol` is `SASL_PLAINTEXT` | `PLAIN`, `SCRAM-SHA-256` or `SCRAM-SHA-512` |
 
+An optional `[server]` table holds settings for the server itself:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `log_level` | No (default `info`) | Least severe messages logged: `trace`, `debug`, `info`, `warn` or `error` |
+
 The server won't start if `brokers` or `default_topic` is missing, if `sasl_mechanism` is missing under
 `SASL_PLAINTEXT`, or if `security_protocol` or `sasl_mechanism` has any other value.
 

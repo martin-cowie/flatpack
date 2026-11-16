@@ -1,11 +1,13 @@
 mod auth;
 mod kafka;
+mod server_config;
 mod storage;
 
 use auth::KafkaAuthenticator;
 use clap::Parser;
 use kafka::{KafkaConfig, KafkaSendHandler, SecurityProtocol};
 use libunftp::ServerBuilder;
+use server_config::{LogLevel, ServerConfig};
 use slog::{o, Drain};
 use std::sync::Arc;
 use storage::MemStorage;
@@ -20,12 +22,16 @@ struct Cli {
 async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
-    // SLog ceremony
-    let decorator = slog_term::TermDecorator::new().build();
-    let drain = slog_async::Async::new(slog_term::FullFormat::new(decorator).build().fuse())
-        .build()
-        .fuse();
-    let logger = slog::Logger::root(drain, o!());
+    let startup_logger = make_logger(LogLevel::Info);
+    let server_config = match ServerConfig::from_file("config.toml") {
+        Ok(config) => config,
+        Err(e) => {
+            slog::error!(startup_logger, "Cannot load server settings from config.toml: {}", describe_error(&*e));
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    drop(startup_logger);
+    let logger = make_logger(server_config.log_level);
 
     let kafka_config = match KafkaConfig::from_file("config.toml") {
         Ok(config) => config,
@@ -76,6 +82,15 @@ async fn main() -> std::process::ExitCode {
     }
 
     std::process::ExitCode::SUCCESS
+}
+
+fn make_logger(level: LogLevel) -> slog::Logger {
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_async::Async::new(slog_term::FullFormat::new(decorator).build().fuse())
+        .build()
+        .filter_level(level.as_slog())
+        .fuse();
+    slog::Logger::root(drain, o!())
 }
 
 /// Renders an error together with its full source chain, e.g.

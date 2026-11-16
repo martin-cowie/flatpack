@@ -194,6 +194,7 @@ pub fn log_until(config_toml: &str, trigger: impl FnOnce(u16), until: &str) -> S
         log.push('\n');
         if line.contains("listening on") {
             if let Some(trigger) = trigger.take() {
+                wait_until_accepting_connections(port);
                 trigger(port);
             }
         }
@@ -204,6 +205,16 @@ pub fn log_until(config_toml: &str, trigger: impl FnOnce(u16), until: &str) -> S
 
     assert!(found, "ftp-server never logged {until:?}; it logged: {log}");
     log
+}
+
+/// The server logs that it is listening just before it binds, so a client that
+/// connects on seeing the log line can be refused.
+fn wait_until_accepting_connections(port: u16) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(Instant::now() < deadline, "ftp-server did not start accepting connections on port {port}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn free_port() -> u16 {

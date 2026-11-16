@@ -195,3 +195,56 @@ fn logs_why_a_login_failed_when_kafka_is_unreachable() {
     assert!(log.contains("Kafka is unreachable"), "{log}");
     assert!(log.contains("Connection refused"), "{log}");
 }
+
+fn failed_login_log(log_level_line: &str) -> String {
+    log_until(
+        &format!(
+            r#"
+                [server]
+                {log_level_line}
+
+                [kafka]
+                brokers = "127.0.0.1:1"
+                default_topic = "rust-topic"
+                auth_timeout_ms = 500
+            "#
+        ),
+        |port| {
+            FtpClient::connect(port).login(USERNAME, PASSWORD);
+        },
+        "Failed login attempt",
+    )
+}
+
+#[test]
+fn log_level_defaults_to_info_which_hides_debug_messages() {
+    let log = failed_login_log("");
+
+    assert!(log.contains("INFO"), "{log}");
+    assert!(!log.contains("DEBG"), "{log}");
+}
+
+#[test]
+fn log_level_debug_shows_debug_messages() {
+    let log = failed_login_log(r#"log_level = "debug""#);
+
+    assert!(log.contains("DEBG"), "{log}");
+}
+
+#[test]
+fn refuses_to_start_with_an_unknown_log_level() {
+    let output = run_until_exit(
+        r#"
+            [server]
+            log_level = "loud"
+
+            [kafka]
+            brokers = "127.0.0.1:1"
+            default_topic = "rust-topic"
+        "#,
+    );
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("loud") || stderr.contains("log_level"), "expected a clear reason, got: {stderr}");
+}

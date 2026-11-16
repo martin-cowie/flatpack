@@ -1,5 +1,9 @@
+[server]
+# trace, debug, info, warn or error
+log_level = "info"
+
 [kafka]
-brokers = "localhost:9092"
+brokers = "localhost:19092"
 default_topic = "rust-topic"
 message_timeout_ms = 5000
 auth_timeout_ms = 5000
