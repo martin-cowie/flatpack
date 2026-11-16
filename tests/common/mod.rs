@@ -143,6 +143,54 @@ pub fn run_until_exit(config_toml: &str) -> std::process::Output {
     child.wait_with_output().unwrap()
 }
 
+/// Starts the server and returns everything it logged up to and including its
+/// "listening" line, then stops it.
+///
+/// Startup messages are logged before that line, so reading up to it sees all
+/// of them without sleeping. Fails the test if it never appears within ten seconds.
+pub fn startup_log(config_toml: &str) -> String {
+    let _turn = ONE_SERVER_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), config_toml).unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ftp-server"))
+        .current_dir(dir.path())
+        .arg("--port")
+        .arg(free_port().to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn ftp-server binary");
+
+    let stderr = child.stderr.take().unwrap();
+    let (lines, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut log = String::new();
+    let mut listening = false;
+    while !listening {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else { break };
+        let Ok(line) = received.recv_timeout(remaining) else { break };
+        listening = line.contains("listening on");
+        log.push_str(&line);
+        log.push('\n');
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(listening, "ftp-server never reported that it was listening; it logged: {log}");
+    log
+}
+
 fn free_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.local_addr().unwrap().port()

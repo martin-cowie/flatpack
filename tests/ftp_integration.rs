@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{run_until_exit, TestServer, PASSWORD, USERNAME};
+use common::{run_until_exit, startup_log, TestServer, PASSWORD, USERNAME};
 
 #[test]
 fn logs_in_with_correct_credentials() {
@@ -147,4 +147,32 @@ fn refuses_to_start_without_brokers() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("missing field `brokers`"), "expected a clear reason, got: {stderr}");
     assert!(!stderr.contains(PASSWORD), "stderr should not reveal passwords: {stderr}");
+}
+
+#[test]
+fn warns_at_startup_that_plaintext_logins_are_unauthenticated() {
+    let log = startup_log(
+        r#"
+            [kafka]
+            brokers = "127.0.0.1:1"
+            default_topic = "rust-topic"
+        "#,
+    );
+
+    assert!(log.contains("not authenticated"), "expected the PLAINTEXT warning, got: {log}");
+}
+
+#[test]
+fn does_not_warn_at_startup_when_sasl_authenticates_logins() {
+    let log = startup_log(
+        r#"
+            [kafka]
+            brokers = "127.0.0.1:1"
+            default_topic = "rust-topic"
+            security_protocol = "SASL_PLAINTEXT"
+            sasl_mechanism = "SCRAM-SHA-256"
+        "#,
+    );
+
+    assert!(!log.contains("not authenticated"), "unexpected PLAINTEXT warning: {log}");
 }
