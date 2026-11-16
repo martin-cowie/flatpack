@@ -145,10 +145,10 @@ fn second_instance_on_the_same_port_fails_to_start_and_says_why() {
 
 #[test]
 fn refuses_to_start_without_the_kafka_table() {
-    let output = run_until_exit(&format!(
+    let output = run_until_exit(
         r#"
-        "#
-    ));
+        "#,
+    );
 
     assert!(
         !output.status.success(),
@@ -167,12 +167,12 @@ fn refuses_to_start_without_the_kafka_table() {
 
 #[test]
 fn refuses_to_start_without_brokers() {
-    let output = run_until_exit(&format!(
+    let output = run_until_exit(
         r#"
             [kafka]
             default_topic = "rust-topic"
-        "#
-    ));
+        "#,
+    );
 
     assert!(
         !output.status.success(),
