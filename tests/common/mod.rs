@@ -67,7 +67,13 @@ impl TestServer {
             .spawn()
             .expect("failed to spawn ftp-server binary");
 
-        let server = TestServer { _kafka: None, child, port, _dir: dir, _turn: turn };
+        let server = TestServer {
+            _kafka: None,
+            child,
+            port,
+            _dir: dir,
+            _turn: turn,
+        };
         server.wait_until_accepting_connections();
         server
     }
@@ -90,7 +96,10 @@ impl TestServer {
                 return;
             }
             if Instant::now() > deadline {
-                panic!("ftp-server did not start listening on port {} in time", self.port);
+                panic!(
+                    "ftp-server did not start listening on port {} in time",
+                    self.port
+                );
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -117,7 +126,11 @@ pub fn run_until_exit(config_toml: &str) -> std::process::Output {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("config.toml"), with_port(config_toml, free_port())).unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        with_port(config_toml, free_port()),
+    )
+    .unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_ftp-server"))
         .current_dir(dir.path())
@@ -180,8 +193,12 @@ pub fn log_until(config_toml: &str, trigger: impl FnOnce(u16), until: &str) -> S
     let mut trigger = Some(trigger);
     let mut found = false;
     while !found {
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else { break };
-        let Ok(line) = received.recv_timeout(remaining) else { break };
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        let Ok(line) = received.recv_timeout(remaining) else {
+            break;
+        };
         log.push_str(&line);
         log.push('\n');
         if line.contains("listening on") {
@@ -204,7 +221,10 @@ pub fn log_until(config_toml: &str, trigger: impl FnOnce(u16), until: &str) -> S
 fn wait_until_accepting_connections(port: u16) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(Instant::now() < deadline, "ftp-server did not start accepting connections on port {port}");
+        assert!(
+            Instant::now() < deadline,
+            "ftp-server did not start accepting connections on port {port}"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -239,9 +259,14 @@ pub struct FtpClient {
 impl FtpClient {
     pub fn connect(port: u16) -> Self {
         let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        let mut client = FtpClient { reader: BufReader::new(stream) };
+        let mut client = FtpClient {
+            reader: BufReader::new(stream),
+        };
         let greeting = client.read_response();
-        assert!(greeting.starts_with("220"), "unexpected greeting: {greeting}");
+        assert!(
+            greeting.starts_with("220"),
+            "unexpected greeting: {greeting}"
+        );
         client
     }
 
@@ -295,7 +320,10 @@ impl FtpClient {
         let stream = self.reader.get_mut();
         write!(stream, "STOR {remote_name}\r\n").unwrap();
         let opening = self.read_response();
-        assert!(opening.starts_with("150"), "STOR did not open a transfer: {opening}");
+        assert!(
+            opening.starts_with("150"),
+            "STOR did not open a transfer: {opening}"
+        );
 
         data.write_all(content).unwrap();
         data.shutdown(std::net::Shutdown::Write).unwrap();

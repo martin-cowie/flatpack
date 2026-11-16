@@ -42,7 +42,10 @@ fn stores_and_retrieves_a_file() {
     assert!(store_reply.starts_with('2'), "STOR failed: {store_reply}");
 
     let (retrieve_reply, content) = client.retrieve("hello.txt");
-    assert!(retrieve_reply.starts_with('2'), "RETR failed: {retrieve_reply}");
+    assert!(
+        retrieve_reply.starts_with('2'),
+        "RETR failed: {retrieve_reply}"
+    );
     assert_eq!(content, b"hello world");
 }
 
@@ -74,7 +77,10 @@ fn deletes_a_file() {
     assert!(dele.starts_with('2'), "DELE failed: {dele}");
 
     let (retrieve_reply, _) = client.retrieve("doomed.txt");
-    assert!(retrieve_reply.starts_with('5'), "expected RETR of a deleted file to fail: {retrieve_reply}");
+    assert!(
+        retrieve_reply.starts_with('5'),
+        "expected RETR of a deleted file to fail: {retrieve_reply}"
+    );
 }
 
 #[test]
@@ -87,7 +93,10 @@ fn site_send_without_a_file_name_is_a_syntax_error() {
     client.login(USERNAME, PASSWORD);
 
     let reply = client.command("SITE SEND");
-    assert!(reply.starts_with('5'), "expected a 5xx syntax error, got: {reply}");
+    assert!(
+        reply.starts_with('5'),
+        "expected a 5xx syntax error, got: {reply}"
+    );
 }
 
 #[test]
@@ -101,7 +110,10 @@ fn each_session_gets_isolated_storage() {
     let mut second = server.connect();
     second.login(USERNAME, PASSWORD);
     let (retrieve_reply, _) = second.retrieve("only-in-first-session.txt");
-    assert!(retrieve_reply.starts_with('5'), "second session should not see the first session's files");
+    assert!(
+        retrieve_reply.starts_with('5'),
+        "second session should not see the first session's files"
+    );
 }
 
 #[test]
@@ -109,12 +121,22 @@ fn second_instance_on_the_same_port_fails_to_start_and_says_why() {
     let server = TestServer::start();
     let mut conflicting = TestServer::start_conflicting(&server);
 
-    let status = conflicting.wait().expect("failed to wait on conflicting instance");
-    assert!(!status.success(), "a second instance on the same port should fail to start");
+    let status = conflicting
+        .wait()
+        .expect("failed to wait on conflicting instance");
+    assert!(
+        !status.success(),
+        "a second instance on the same port should fail to start"
+    );
 
     let mut stderr = String::new();
     use std::io::Read;
-    conflicting.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+    conflicting
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
     assert!(
         stderr.contains("already in use") || stderr.contains("FTP server failed to listen"),
         "expected a clear reason in stderr, got: {stderr}"
@@ -128,10 +150,19 @@ fn refuses_to_start_without_the_kafka_table() {
         "#
     ));
 
-    assert!(!output.status.success(), "the server should not start without [kafka]");
+    assert!(
+        !output.status.success(),
+        "the server should not start without [kafka]"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("missing field `kafka`"), "expected a clear reason, got: {stderr}");
-    assert!(!stderr.contains(PASSWORD), "stderr should not reveal passwords: {stderr}");
+    assert!(
+        stderr.contains("missing field `kafka`"),
+        "expected a clear reason, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains(PASSWORD),
+        "stderr should not reveal passwords: {stderr}"
+    );
 }
 
 #[test]
@@ -143,10 +174,19 @@ fn refuses_to_start_without_brokers() {
         "#
     ));
 
-    assert!(!output.status.success(), "the server should not start without brokers");
+    assert!(
+        !output.status.success(),
+        "the server should not start without brokers"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("missing field `brokers`"), "expected a clear reason, got: {stderr}");
-    assert!(!stderr.contains(PASSWORD), "stderr should not reveal passwords: {stderr}");
+    assert!(
+        stderr.contains("missing field `brokers`"),
+        "expected a clear reason, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains(PASSWORD),
+        "stderr should not reveal passwords: {stderr}"
+    );
 }
 
 #[test]
@@ -159,7 +199,10 @@ fn warns_at_startup_that_plaintext_logins_are_unauthenticated() {
         "#,
     );
 
-    assert!(log.contains("not authenticated"), "expected the PLAINTEXT warning, got: {log}");
+    assert!(
+        log.contains("not authenticated"),
+        "expected the PLAINTEXT warning, got: {log}"
+    );
 }
 
 #[test]
@@ -174,7 +217,10 @@ fn does_not_warn_at_startup_when_sasl_authenticates_logins() {
         "#,
     );
 
-    assert!(!log.contains("not authenticated"), "unexpected PLAINTEXT warning: {log}");
+    assert!(
+        !log.contains("not authenticated"),
+        "unexpected PLAINTEXT warning: {log}"
+    );
 }
 
 #[test]
@@ -246,5 +292,8 @@ fn refuses_to_start_with_an_unknown_log_level() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("loud") || stderr.contains("log_level"), "expected a clear reason, got: {stderr}");
+    assert!(
+        stderr.contains("loud") || stderr.contains("log_level"),
+        "expected a clear reason, got: {stderr}"
+    );
 }

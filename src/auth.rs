@@ -76,7 +76,9 @@ pub struct KafkaUser {
 
 impl std::fmt::Debug for KafkaUser {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KafkaUser").field("username", &self.username).finish()
+        f.debug_struct("KafkaUser")
+            .field("username", &self.username)
+            .finish()
     }
 }
 
@@ -98,7 +100,8 @@ pub struct KafkaUserDetailProvider {
 
 impl std::fmt::Debug for KafkaUserDetailProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KafkaUserDetailProvider").finish_non_exhaustive()
+        f.debug_struct("KafkaUserDetailProvider")
+            .finish_non_exhaustive()
     }
 }
 
@@ -106,40 +109,64 @@ impl std::fmt::Debug for KafkaUserDetailProvider {
 impl UserDetailProvider for KafkaUserDetailProvider {
     type User = KafkaUser;
 
-    async fn provide_user_detail(&self, principal: &Principal) -> Result<KafkaUser, UserDetailError> {
+    async fn provide_user_detail(
+        &self,
+        principal: &Principal,
+    ) -> Result<KafkaUser, UserDetailError> {
         let producer = self
             .handoff
             .lock()
             .unwrap()
             .get_mut(&principal.username)
             .and_then(Vec::pop)
-            .ok_or_else(|| UserDetailError::Generic(format!("no login is waiting for {}", principal.username)))?;
-        Ok(KafkaUser { username: principal.username.clone(), producer })
+            .ok_or_else(|| {
+                UserDetailError::Generic(format!("no login is waiting for {}", principal.username))
+            })?;
+        Ok(KafkaUser {
+            username: principal.username.clone(),
+            producer,
+        })
     }
 }
 
 impl std::fmt::Debug for KafkaAuthenticator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KafkaAuthenticator").field("config", &self.config).finish()
+        f.debug_struct("KafkaAuthenticator")
+            .field("config", &self.config)
+            .finish()
     }
 }
 
 impl KafkaAuthenticator {
     pub fn new(config: KafkaConfig, logger: slog::Logger) -> Self {
-        KafkaAuthenticator { config, handoff: Arc::new(Mutex::new(HashMap::new())), logger }
+        KafkaAuthenticator {
+            config,
+            handoff: Arc::new(Mutex::new(HashMap::new())),
+            logger,
+        }
     }
 
     /// Returns the provider that hands this authenticator's logins to their sessions.
     pub fn user_detail_provider(&self) -> KafkaUserDetailProvider {
-        KafkaUserDetailProvider { handoff: Arc::clone(&self.handoff) }
+        KafkaUserDetailProvider {
+            handoff: Arc::clone(&self.handoff),
+        }
     }
 
-    fn connect(config: &KafkaConfig, logger: &slog::Logger, username: &str, password: &str) -> Result<SessionProducer, ConnectError> {
+    fn connect(
+        config: &KafkaConfig,
+        logger: &slog::Logger,
+        username: &str,
+        password: &str,
+    ) -> Result<SessionProducer, ConnectError> {
         let mut client_config = ClientConfig::new();
         client_config
             .set("bootstrap.servers", &config.brokers)
             .set("message.timeout.ms", config.message_timeout_ms.to_string())
-            .set("security.protocol", config.security_protocol.as_librdkafka());
+            .set(
+                "security.protocol",
+                config.security_protocol.as_librdkafka(),
+            );
         if let Some(mechanism) = config.sasl_mechanism {
             client_config
                 .set("sasl.mechanism", mechanism.as_librdkafka())
@@ -157,16 +184,27 @@ impl KafkaAuthenticator {
         loop {
             match producer.client().fetch_metadata(None, PROBE_SLICE) {
                 Ok(_) => return Ok(producer),
-                Err(_) if events.rejected.load(Ordering::SeqCst) => return Err(ConnectError::Rejected),
+                Err(_) if events.rejected.load(Ordering::SeqCst) => {
+                    return Err(ConnectError::Rejected)
+                }
                 Err(e) if Instant::now() >= deadline => {
                     let reasons = events.reasons.lock().unwrap();
-                    let reason = if reasons.is_empty() { e.to_string() } else { reasons.join("; ") };
+                    let reason = if reasons.is_empty() {
+                        e.to_string()
+                    } else {
+                        reasons.join("; ")
+                    };
                     return Err(ConnectError::Unreachable(reason));
                 }
                 Err(e) => {
                     let error = e.to_string();
                     if error != last_logged {
-                        slog::debug!(logger, "Kafka probe for {} failed, retrying: {}", username, error);
+                        slog::debug!(
+                            logger,
+                            "Kafka probe for {} failed, retrying: {}",
+                            username,
+                            error
+                        );
                         last_logged = error;
                     }
                 }
@@ -186,22 +224,26 @@ impl Authenticator for KafkaAuthenticator {
         let logger = self.logger.clone();
         let username_owned = username.to_string();
         let password = creds.password.clone().unwrap_or_default();
-        let producer = tokio::task::spawn_blocking(move || Self::connect(&config, &logger, &username_owned, &password))
-            .await
-            .map_err(|e| AuthenticationError::new(format!("login task failed: {e}")))?
-            .map_err(|e| match e {
-                ConnectError::Rejected => AuthenticationError::BadPassword,
-                ConnectError::Unreachable(reason) => {
-                    AuthenticationError::new(format!("Kafka is unreachable: {reason}"))
-                }
-            })?;
+        let producer = tokio::task::spawn_blocking(move || {
+            Self::connect(&config, &logger, &username_owned, &password)
+        })
+        .await
+        .map_err(|e| AuthenticationError::new(format!("login task failed: {e}")))?
+        .map_err(|e| match e {
+            ConnectError::Rejected => AuthenticationError::BadPassword,
+            ConnectError::Unreachable(reason) => {
+                AuthenticationError::new(format!("Kafka is unreachable: {reason}"))
+            }
+        })?;
         self.handoff
             .lock()
             .unwrap()
             .entry(username.to_string())
             .or_default()
             .push(producer);
-        Ok(Principal { username: username.to_string() })
+        Ok(Principal {
+            username: username.to_string(),
+        })
     }
 }
 
@@ -230,7 +272,8 @@ mod tests {
     #[tokio::test]
     async fn plaintext_login_is_accepted_for_any_credentials_when_the_broker_is_reachable() {
         let cluster = MockCluster::new(1).unwrap();
-        let authenticator = KafkaAuthenticator::new(config(&cluster.bootstrap_servers()), discard_logger());
+        let authenticator =
+            KafkaAuthenticator::new(config(&cluster.bootstrap_servers()), discard_logger());
 
         let principal = authenticator
             .authenticate("alice", &Credentials::from("anything"))
@@ -246,7 +289,9 @@ mod tests {
         unreachable.auth_timeout_ms = 500;
         let authenticator = KafkaAuthenticator::new(unreachable, discard_logger());
 
-        let result = authenticator.authenticate("alice", &Credentials::from("anything")).await;
+        let result = authenticator
+            .authenticate("alice", &Credentials::from("anything"))
+            .await;
 
         let Err(AuthenticationError::ImplPropagated(message, _)) = result else {
             panic!("expected a Kafka-unreachable error, got {result:?}");
@@ -257,14 +302,21 @@ mod tests {
     #[tokio::test]
     async fn provider_hands_the_logged_in_sessions_producer_to_it() {
         let cluster = MockCluster::new(1).unwrap();
-        let authenticator = KafkaAuthenticator::new(config(&cluster.bootstrap_servers()), discard_logger());
+        let authenticator =
+            KafkaAuthenticator::new(config(&cluster.bootstrap_servers()), discard_logger());
         let provider = authenticator.user_detail_provider();
-        let principal = authenticator.authenticate("alice", &Credentials::from("x")).await.unwrap();
+        let principal = authenticator
+            .authenticate("alice", &Credentials::from("x"))
+            .await
+            .unwrap();
 
         let user = provider.provide_user_detail(&principal).await.unwrap();
 
         assert_eq!(user.username, "alice");
-        let metadata = user.producer.client().fetch_metadata(None, Duration::from_secs(2));
+        let metadata = user
+            .producer
+            .client()
+            .fetch_metadata(None, Duration::from_secs(2));
         assert!(metadata.is_ok());
     }
 
@@ -273,14 +325,22 @@ mod tests {
         let authenticator = KafkaAuthenticator::new(config("127.0.0.1:1"), discard_logger());
         let provider = authenticator.user_detail_provider();
 
-        let result = provider.provide_user_detail(&Principal { username: "alice".to_string() }).await;
+        let result = provider
+            .provide_user_detail(&Principal {
+                username: "alice".to_string(),
+            })
+            .await;
 
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn sasl_login_is_rejected_by_a_broker_that_does_not_speak_sasl() {
-        for mechanism in [SaslMechanism::Plain, SaslMechanism::ScramSha256, SaslMechanism::ScramSha512] {
+        for mechanism in [
+            SaslMechanism::Plain,
+            SaslMechanism::ScramSha256,
+            SaslMechanism::ScramSha512,
+        ] {
             let cluster = MockCluster::new(1).unwrap();
             let mut sasl = config(&cluster.bootstrap_servers());
             sasl.security_protocol = SecurityProtocol::SaslPlaintext;
@@ -288,9 +348,14 @@ mod tests {
             sasl.auth_timeout_ms = 1000;
             let authenticator = KafkaAuthenticator::new(sasl, discard_logger());
 
-            let result = authenticator.authenticate("alice", &Credentials::from("secret")).await;
+            let result = authenticator
+                .authenticate("alice", &Credentials::from("secret"))
+                .await;
 
-            assert!(matches!(result, Err(AuthenticationError::BadPassword)), "{mechanism:?}");
+            assert!(
+                matches!(result, Err(AuthenticationError::BadPassword)),
+                "{mechanism:?}"
+            );
         }
     }
 }

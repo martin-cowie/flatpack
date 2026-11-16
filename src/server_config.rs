@@ -14,7 +14,10 @@ pub struct ServerConfig {
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        ServerConfig { port: DEFAULT_PORT, log_level: LogLevel::default() }
+        ServerConfig {
+            port: DEFAULT_PORT,
+            log_level: LogLevel::default(),
+        }
     }
 }
 
@@ -76,7 +79,10 @@ mod tests {
     #[test]
     fn rejects_an_unknown_log_level() {
         let err = parse("[server]\nlog_level = \"loud\"\n").unwrap_err();
-        assert!(err.to_string().contains("log_level") || err.to_string().contains("loud"), "{err}");
+        assert!(
+            err.to_string().contains("log_level") || err.to_string().contains("loud"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -93,7 +99,10 @@ mod tests {
     fn rejects_an_invalid_port() {
         for value in ["70000", "-1", "\"ftp\""] {
             let err = parse(&format!("[server]\nport = {value}\n")).unwrap_err();
-            assert!(err.to_string().contains("port") || err.to_string().contains(value), "{value}: {err}");
+            assert!(
+                err.to_string().contains("port") || err.to_string().contains(value),
+                "{value}: {err}"
+            );
         }
     }
 

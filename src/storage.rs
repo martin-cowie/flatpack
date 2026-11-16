@@ -297,7 +297,11 @@ mod tests {
     #[tokio::test]
     async fn put_propagates_a_read_error() {
         let storage = MemStorage::new();
-        let err = storage.put(&user(), FailingReader, "x.txt", 0).await.err().unwrap();
+        let err = storage
+            .put(&user(), FailingReader, "x.txt", 0)
+            .await
+            .err()
+            .unwrap();
         assert_eq!(err.kind(), ErrorKind::LocalError);
     }
 
@@ -320,7 +324,12 @@ mod tests {
     async fn metadata_of_known_file_reports_its_size() {
         let storage = MemStorage::new();
         storage
-            .put(&user(), std::io::Cursor::new(b"hello".to_vec()), "hello.txt", 0)
+            .put(
+                &user(),
+                std::io::Cursor::new(b"hello".to_vec()),
+                "hello.txt",
+                0,
+            )
             .await
             .unwrap();
 
@@ -333,7 +342,12 @@ mod tests {
     async fn put_then_get_round_trips_file_content() {
         let storage = MemStorage::new();
         let size = storage
-            .put(&user(), std::io::Cursor::new(b"hello world".to_vec()), "hello.txt", 0)
+            .put(
+                &user(),
+                std::io::Cursor::new(b"hello world".to_vec()),
+                "hello.txt",
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(size, 11);
@@ -346,7 +360,12 @@ mod tests {
     async fn get_honours_start_pos() {
         let storage = MemStorage::new();
         storage
-            .put(&user(), std::io::Cursor::new(b"hello world".to_vec()), "hello.txt", 0)
+            .put(
+                &user(),
+                std::io::Cursor::new(b"hello world".to_vec()),
+                "hello.txt",
+                0,
+            )
             .await
             .unwrap();
 
@@ -422,7 +441,12 @@ mod tests {
     async fn rename_moves_file_content_to_the_new_name() {
         let storage = MemStorage::new();
         storage
-            .put(&user(), std::io::Cursor::new(b"hello".to_vec()), "old.txt", 0)
+            .put(
+                &user(),
+                std::io::Cursor::new(b"hello".to_vec()),
+                "old.txt",
+                0,
+            )
             .await
             .unwrap();
 
@@ -436,7 +460,10 @@ mod tests {
     #[tokio::test]
     async fn rename_of_unknown_file_errors() {
         let storage = MemStorage::new();
-        let err = storage.rename(&user(), "missing.txt", "new.txt").await.unwrap_err();
+        let err = storage
+            .rename(&user(), "missing.txt", "new.txt")
+            .await
+            .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::PermanentFileNotAvailable);
     }
 
@@ -471,9 +498,14 @@ mod tests {
     async fn sessions_get_independent_storage() {
         let a = MemStorage::new();
         let b = MemStorage::new();
-        a.put(&user(), std::io::Cursor::new(b"only in a".to_vec()), "f.txt", 0)
-            .await
-            .unwrap();
+        a.put(
+            &user(),
+            std::io::Cursor::new(b"only in a".to_vec()),
+            "f.txt",
+            0,
+        )
+        .await
+        .unwrap();
 
         assert!(b.metadata(&user(), "f.txt").await.is_err());
     }

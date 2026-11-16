@@ -39,7 +39,6 @@ pub enum SecurityProtocol {
     Plaintext,
     #[serde(rename = "SASL_PLAINTEXT")]
     SaslPlaintext,
-
     //TODO SSL/TLS editions of both of these - see https://docs.confluent.io/platform/current/clients/librdkafka/html/md_CONFIGURATION.html
 }
 
@@ -62,7 +61,6 @@ pub enum SaslMechanism {
     ScramSha256,
     #[serde(rename = "SCRAM-SHA-512")]
     ScramSha512,
-
     //TODO: GSSAPI and OAUTHBEARER
 }
 
@@ -95,8 +93,11 @@ impl TryFrom<RawKafkaConfig> for KafkaConfig {
     type Error = String;
 
     fn try_from(raw: RawKafkaConfig) -> Result<Self, Self::Error> {
-        if raw.security_protocol == SecurityProtocol::SaslPlaintext && raw.sasl_mechanism.is_none() {
-            return Err("sasl_mechanism is required when security_protocol is SASL_PLAINTEXT".to_string());
+        if raw.security_protocol == SecurityProtocol::SaslPlaintext && raw.sasl_mechanism.is_none()
+        {
+            return Err(
+                "sasl_mechanism is required when security_protocol is SASL_PLAINTEXT".to_string(),
+            );
         }
         Ok(KafkaConfig {
             brokers: raw.brokers,
@@ -150,7 +151,10 @@ impl SendArgs {
         let args = Self::try_parse_from(tokens)
             .map_err(|e| Reply::new(ReplyCode::ParameterSyntaxError, &e.to_string()))?;
         if args.file_names.is_empty() {
-            return Err(Reply::new(ReplyCode::ParameterSyntaxError, "Missing file names"));
+            return Err(Reply::new(
+                ReplyCode::ParameterSyntaxError,
+                "Missing file names",
+            ));
         }
         Ok(args)
     }
@@ -169,9 +173,14 @@ impl SendArgs {
 
 /// Builds a message's headers from the command line's `--header` pairs, in order.
 fn make_headers(pairs: &[(String, String)]) -> OwnedHeaders {
-    pairs.iter().fold(OwnedHeaders::new(), |headers, (name, value)| {
-        headers.insert(Header { key: name, value: Some(value.as_str()) })
-    })
+    pairs
+        .iter()
+        .fold(OwnedHeaders::new(), |headers, (name, value)| {
+            headers.insert(Header {
+                key: name,
+                value: Some(value.as_str()),
+            })
+        })
 }
 
 // MARK: Implementation
@@ -273,10 +282,17 @@ mod tests {
             .set("bootstrap.servers", "127.0.0.1:1")
             .create_with_context(crate::auth::AuthContext::default())
             .unwrap();
-        KafkaUser { username: "alice".to_string(), producer }
+        KafkaUser {
+            username: "alice".to_string(),
+            producer,
+        }
     }
 
-    fn context(arguments: &str, user: Option<KafkaUser>, storage: MemStorage) -> SiteCommandContext<MemStorage, KafkaUser> {
+    fn context(
+        arguments: &str,
+        user: Option<KafkaUser>,
+        storage: MemStorage,
+    ) -> SiteCommandContext<MemStorage, KafkaUser> {
         SiteCommandContext {
             command: "SEND".to_string(),
             arguments: arguments.to_string(),
@@ -323,7 +339,6 @@ mod tests {
         let reply = KafkaSendHandler::new(config()).handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::LocalError));
     }
-
 
     #[test]
     fn kafka_config_requires_the_kafka_table() {
@@ -431,7 +446,10 @@ mod tests {
             let result = toml::from_str::<Config>(&format!(
                 "[kafka]\nbrokers = \"b:9092\"\ndefault_topic = \"t\"\nsecurity_protocol = \"{protocol}\"\nsasl_mechanism = \"{mechanism}\"\n"
             ));
-            assert!(result.is_err(), "{protocol} with {mechanism} should be rejected");
+            assert!(
+                result.is_err(),
+                "{protocol} with {mechanism} should be rejected"
+            );
         }
     }
 
@@ -484,12 +502,18 @@ mod tests {
 
     #[test]
     fn header_value_may_contain_equals() {
-        assert_eq!(SendArgs::parse_header("a=b=c"), Ok(("a".to_string(), "b=c".to_string())));
+        assert_eq!(
+            SendArgs::parse_header("a=b=c"),
+            Ok(("a".to_string(), "b=c".to_string()))
+        );
     }
 
     #[test]
     fn header_value_may_be_empty() {
-        assert_eq!(SendArgs::parse_header("a="), Ok(("a".to_string(), String::new())));
+        assert_eq!(
+            SendArgs::parse_header("a="),
+            Ok(("a".to_string(), String::new()))
+        );
     }
 
     #[test]
@@ -516,10 +540,7 @@ mod tests {
             ("a".to_string(), "1".to_string()),
             ("b".to_string(), "3".to_string()),
         ]);
-        let pairs: Vec<(&str, &[u8])> = headers
-            .iter()
-            .map(|h| (h.key, h.value.unwrap()))
-            .collect();
+        let pairs: Vec<(&str, &[u8])> = headers.iter().map(|h| (h.key, h.value.unwrap())).collect();
         assert_eq!(
             pairs,
             vec![

@@ -29,23 +29,35 @@ impl SaslKafka {
     /// A broker that accepts `username` / `password` under both SCRAM mechanisms.
     pub fn with_user(username: &str, password: &str) -> Self {
         let env = [
-            ("KAFKA_LISTENERS", "EXTERNAL://0.0.0.0:9092,BROKER://0.0.0.0:9093,CONTROLLER://0.0.0.0:9094"),
+            (
+                "KAFKA_LISTENERS",
+                "EXTERNAL://0.0.0.0:9092,BROKER://0.0.0.0:9093,CONTROLLER://0.0.0.0:9094",
+            ),
             (
                 "KAFKA_LISTENER_SECURITY_PROTOCOL_MAP",
                 "EXTERNAL:SASL_PLAINTEXT,BROKER:PLAINTEXT,CONTROLLER:PLAINTEXT",
             ),
-            ("KAFKA_SASL_ENABLED_MECHANISMS", "SCRAM-SHA-256,SCRAM-SHA-512"),
+            (
+                "KAFKA_SASL_ENABLED_MECHANISMS",
+                "SCRAM-SHA-256,SCRAM-SHA-512",
+            ),
             ("CLUSTER_ID", "5L6g3nShT-eMCtK--X86sw"),
             ("KAFKA_PROCESS_ROLES", "broker,controller"),
             ("KAFKA_CONTROLLER_LISTENER_NAMES", "CONTROLLER"),
             ("KAFKA_INTER_BROKER_LISTENER_NAME", "BROKER"),
-            ("KAFKA_ADVERTISED_LISTENERS", "EXTERNAL://localhost:9092,BROKER://localhost:9093"),
+            (
+                "KAFKA_ADVERTISED_LISTENERS",
+                "EXTERNAL://localhost:9092,BROKER://localhost:9093",
+            ),
             ("KAFKA_BROKER_ID", "1"),
             ("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", "1"),
             ("KAFKA_CONTROLLER_QUORUM_VOTERS", "1@localhost:9094"),
         ];
         SaslKafka {
-            env_vars: env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            env_vars: env
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             username: username.to_string(),
             password: password.to_string(),
         }
@@ -55,7 +67,9 @@ impl SaslKafka {
 impl SaslKafka {
     /// Starts the broker and creates its SCRAM user, returning once logins work.
     pub async fn start(self) -> ContainerAsync<SaslKafka> {
-        let container = AsyncRunner::start(self.clone()).await.expect("failed to start the SASL Kafka test container");
+        let container = AsyncRunner::start(self.clone())
+            .await
+            .expect("failed to start the SASL Kafka test container");
         for mechanism in ["SCRAM-SHA-256", "SCRAM-SHA-512"] {
             let command = format!(
                 "{KAFKA_CONFIGS} --bootstrap-server localhost:9093 --alter --entity-type users --entity-name {user} \
@@ -82,7 +96,11 @@ impl ScramCredentials for ContainerAsync<SaslKafka> {
                 .exec(ExecCommand::new(["sh", "-c", command]))
                 .await
                 .expect("failed to run the SCRAM credential command");
-            let output = [result.stdout_to_vec().await.unwrap(), result.stderr_to_vec().await.unwrap()].concat();
+            let output = [
+                result.stdout_to_vec().await.unwrap(),
+                result.stderr_to_vec().await.unwrap(),
+            ]
+            .concat();
             if result.exit_code().await.unwrap() == Some(0) {
                 return;
             }
@@ -113,7 +131,9 @@ impl Image for SaslKafka {
         Some("bash")
     }
 
-    fn env_vars(&self) -> impl IntoIterator<Item = (impl Into<Cow<'_, str>>, impl Into<Cow<'_, str>>)> {
+    fn env_vars(
+        &self,
+    ) -> impl IntoIterator<Item = (impl Into<Cow<'_, str>>, impl Into<Cow<'_, str>>)> {
         &self.env_vars
     }
 
@@ -128,7 +148,10 @@ impl Image for SaslKafka {
         &[SASL_PORT]
     }
 
-    fn exec_after_start(&self, state: ContainerState) -> Result<Vec<ExecCommand>, testcontainers::TestcontainersError> {
+    fn exec_after_start(
+        &self,
+        state: ContainerState,
+    ) -> Result<Vec<ExecCommand>, testcontainers::TestcontainersError> {
         let write_start_script = vec![
             "sh".to_string(),
             "-c".to_string(),
@@ -137,9 +160,9 @@ impl Image for SaslKafka {
                 state.host_port_ipv4(SASL_PORT)?
             ),
         ];
-        Ok(vec![
-            ExecCommand::new(write_start_script)
-                .with_container_ready_conditions(vec![WaitFor::message_on_stdout("Kafka Server started")]),
-        ])
+        Ok(vec![ExecCommand::new(write_start_script)
+            .with_container_ready_conditions(vec![
+                WaitFor::message_on_stdout("Kafka Server started"),
+            ])])
     }
 }

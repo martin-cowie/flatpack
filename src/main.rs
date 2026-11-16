@@ -6,9 +6,9 @@ mod storage;
 
 use auth::KafkaAuthenticator;
 use clap::Parser;
+use config::Config;
 use kafka::{KafkaSendHandler, SecurityProtocol};
 use libunftp::ServerBuilder;
-use config::Config;
 use server_config::LogLevel;
 use slog::{o, Drain};
 use std::sync::Arc;
@@ -28,7 +28,11 @@ async fn main() -> std::process::ExitCode {
     let config = match Config::from_path(&cli.config) {
         Ok(config) => config,
         Err(e) => {
-            eprintln!("Cannot load {}: {}", cli.config.display(), describe_error(&*e));
+            eprintln!(
+                "Cannot load {}: {}",
+                cli.config.display(),
+                describe_error(&*e)
+            );
             return std::process::ExitCode::FAILURE;
         }
     };
@@ -46,23 +50,21 @@ async fn main() -> std::process::ExitCode {
     let authenticator = KafkaAuthenticator::new(kafka_config.clone(), logger.clone());
     let user_detail_provider = authenticator.user_detail_provider();
 
-    let server = match ServerBuilder::with_authenticator(
-        Box::new(MemStorage::new),
-        Arc::new(authenticator),
-    )
-    .user_detail_provider(Arc::new(user_detail_provider))
-    .logger(logger.clone())
-    .greeting("This is a test FTP server")
-    .passive_ports(50000..=65535)
-    .site_command("send", KafkaSendHandler::new(kafka_config))
-    .build()
-    {
-        Ok(server) => server,
-        Err(e) => {
-            slog::error!(logger, "Cannot build FTP server: {}", describe_error(&e));
-            return std::process::ExitCode::FAILURE;
-        }
-    };
+    let server =
+        match ServerBuilder::with_authenticator(Box::new(MemStorage::new), Arc::new(authenticator))
+            .user_detail_provider(Arc::new(user_detail_provider))
+            .logger(logger.clone())
+            .greeting("This is a test FTP server")
+            .passive_ports(50000..=65535)
+            .site_command("send", KafkaSendHandler::new(kafka_config))
+            .build()
+        {
+            Ok(server) => server,
+            Err(e) => {
+                slog::error!(logger, "Cannot build FTP server: {}", describe_error(&e));
+                return std::process::ExitCode::FAILURE;
+            }
+        };
 
     let bind_address = format!("0.0.0.0:{}", port);
     slog::info!(logger, "FTP server listening on {}", bind_address);

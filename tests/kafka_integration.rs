@@ -42,7 +42,9 @@ async fn site_send_publishes_the_uploaded_file_to_kafka() {
         .set("auto.offset.reset", "earliest")
         .create()
         .expect("failed to create Kafka consumer");
-    consumer.subscribe(&[TOPIC]).expect("failed to subscribe to topic");
+    consumer
+        .subscribe(&[TOPIC])
+        .expect("failed to subscribe to topic");
 
     let server = TestServer::start_with_config(&format!(
         r#"
@@ -58,7 +60,10 @@ async fn site_send_publishes_the_uploaded_file_to_kafka() {
     assert!(store_reply.starts_with('2'), "STOR failed: {store_reply}");
 
     let send_reply = client.command("SITE SEND hello.txt");
-    assert!(send_reply.starts_with('2'), "SITE SEND failed: {send_reply}");
+    assert!(
+        send_reply.starts_with('2'),
+        "SITE SEND failed: {send_reply}"
+    );
 
     // `kafka.rs` relies on Kafka's auto-create-topics behaviour rather than
     // pre-creating the topic, so the consumer may see `UnknownTopicOrPartition`
