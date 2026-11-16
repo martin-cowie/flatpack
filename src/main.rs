@@ -50,6 +50,7 @@ async fn main() -> std::process::ExitCode {
         Arc::new(authenticator),
     )
     .user_detail_provider(Arc::new(user_detail_provider))
+    .logger(logger.clone())
     .greeting("This is a test FTP server")
     .passive_ports(50000..=65535)
     .site_command("send", KafkaSendHandler::new(kafka_config))

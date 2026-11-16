@@ -149,16 +149,25 @@ pub fn run_until_exit(config_toml: &str) -> std::process::Output {
 /// Startup messages are logged before that line, so reading up to it sees all
 /// of them without sleeping. Fails the test if it never appears within ten seconds.
 pub fn startup_log(config_toml: &str) -> String {
+    log_until(config_toml, |_port| {}, "listening on")
+}
+
+/// Starts the server, waits until it is listening, runs `trigger` with its port,
+/// and returns everything it logged up to the first line containing `until`.
+///
+/// Fails the test if no such line appears within ten seconds of starting.
+pub fn log_until(config_toml: &str, trigger: impl FnOnce(u16), until: &str) -> String {
     let _turn = ONE_SERVER_AT_A_TIME
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("config.toml"), config_toml).unwrap();
 
+    let port = free_port();
     let mut child = Command::new(env!("CARGO_BIN_EXE_ftp-server"))
         .current_dir(dir.path())
         .arg("--port")
-        .arg(free_port().to_string())
+        .arg(port.to_string())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -176,18 +185,24 @@ pub fn startup_log(config_toml: &str) -> String {
 
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut log = String::new();
-    let mut listening = false;
-    while !listening {
+    let mut trigger = Some(trigger);
+    let mut found = false;
+    while !found {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else { break };
         let Ok(line) = received.recv_timeout(remaining) else { break };
-        listening = line.contains("listening on");
         log.push_str(&line);
         log.push('\n');
+        if line.contains("listening on") {
+            if let Some(trigger) = trigger.take() {
+                trigger(port);
+            }
+        }
+        found = line.contains(until);
     }
     let _ = child.kill();
     let _ = child.wait();
 
-    assert!(listening, "ftp-server never reported that it was listening; it logged: {log}");
+    assert!(found, "ftp-server never logged {until:?}; it logged: {log}");
     log
 }
 
@@ -203,7 +218,7 @@ pub struct FtpClient {
 }
 
 impl FtpClient {
-    fn connect(port: u16) -> Self {
+    pub fn connect(port: u16) -> Self {
         let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let mut client = FtpClient { reader: BufReader::new(stream) };
         let greeting = client.read_response();

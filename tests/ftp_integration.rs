@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{run_until_exit, startup_log, TestServer, PASSWORD, USERNAME};
+use common::{log_until, run_until_exit, startup_log, FtpClient, TestServer, PASSWORD, USERNAME};
 
 #[test]
 fn logs_in_with_correct_credentials() {
@@ -175,4 +175,23 @@ fn does_not_warn_at_startup_when_sasl_authenticates_logins() {
     );
 
     assert!(!log.contains("not authenticated"), "unexpected PLAINTEXT warning: {log}");
+}
+
+#[test]
+fn logs_why_a_login_failed_when_kafka_is_unreachable() {
+    let log = log_until(
+        r#"
+            [kafka]
+            brokers = "127.0.0.1:1"
+            default_topic = "rust-topic"
+            auth_timeout_ms = 1000
+        "#,
+        |port| {
+            FtpClient::connect(port).login(USERNAME, PASSWORD);
+        },
+        "Failed login attempt",
+    );
+
+    assert!(log.contains("Kafka is unreachable"), "{log}");
+    assert!(log.contains("Connection refused"), "{log}");
 }

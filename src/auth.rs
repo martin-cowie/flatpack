@@ -153,6 +153,7 @@ impl KafkaAuthenticator {
             .map_err(|e| ConnectError::Unreachable(e.to_string()))?;
 
         let deadline = Instant::now() + Duration::from_millis(config.auth_timeout_ms);
+        let mut last_logged = String::new();
         loop {
             match producer.client().fetch_metadata(None, PROBE_SLICE) {
                 Ok(_) => return Ok(producer),
@@ -162,7 +163,13 @@ impl KafkaAuthenticator {
                     let reason = if reasons.is_empty() { e.to_string() } else { reasons.join("; ") };
                     return Err(ConnectError::Unreachable(reason));
                 }
-                Err(e) => slog::debug!(logger, "Kafka probe for {} failed, retrying: {}", username, e),
+                Err(e) => {
+                    let error = e.to_string();
+                    if error != last_logged {
+                        slog::debug!(logger, "Kafka probe for {} failed, retrying: {}", username, error);
+                        last_logged = error;
+                    }
+                }
             }
         }
     }
