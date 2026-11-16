@@ -1,45 +1,40 @@
 mod auth;
+mod config;
 mod kafka;
 mod server_config;
 mod storage;
 
 use auth::KafkaAuthenticator;
 use clap::Parser;
-use kafka::{KafkaConfig, KafkaSendHandler, SecurityProtocol};
+use kafka::{KafkaSendHandler, SecurityProtocol};
 use libunftp::ServerBuilder;
-use server_config::{LogLevel, ServerConfig};
+use config::Config;
+use server_config::LogLevel;
 use slog::{o, Drain};
 use std::sync::Arc;
 use storage::MemStorage;
 
 #[derive(Parser)]
 struct Cli {
-    #[arg(short, long, default_value_t = 2121)]
-    port: u16,
+    /// Path to the configuration file
+    #[arg(short, long, default_value = "config.toml")]
+    config: std::path::PathBuf,
 }
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
-    let startup_logger = make_logger(LogLevel::Info);
-    let server_config = match ServerConfig::from_file("config.toml") {
+    let config = match Config::from_path(&cli.config) {
         Ok(config) => config,
         Err(e) => {
-            slog::error!(startup_logger, "Cannot load server settings from config.toml: {}", describe_error(&*e));
+            eprintln!("Cannot load {}: {}", cli.config.display(), describe_error(&*e));
             return std::process::ExitCode::FAILURE;
         }
     };
-    drop(startup_logger);
-    let logger = make_logger(server_config.log_level);
-
-    let kafka_config = match KafkaConfig::from_file("config.toml") {
-        Ok(config) => config,
-        Err(e) => {
-            slog::error!(logger, "Cannot load Kafka settings from config.toml: {}", describe_error(&*e));
-            return std::process::ExitCode::FAILURE;
-        }
-    };
+    let logger = make_logger(config.server.log_level);
+    let port = config.server.port;
+    let kafka_config = config.kafka;
 
     if kafka_config.security_protocol == SecurityProtocol::Plaintext {
         slog::warn!(
@@ -69,7 +64,7 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
-    let bind_address = format!("0.0.0.0:{}", cli.port);
+    let bind_address = format!("0.0.0.0:{}", port);
     slog::info!(logger, "FTP server listening on {}", bind_address);
     if let Err(e) = server.listen(bind_address.clone()).await {
         slog::error!(
@@ -104,4 +99,21 @@ fn describe_error(err: &(dyn std::error::Error + 'static)) -> String {
         source = e.source();
     }
     msg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_path_defaults_to_config_toml() {
+        let cli = Cli::try_parse_from(["ftp-server"]).unwrap();
+        assert_eq!(cli.config, std::path::PathBuf::from("config.toml"));
+    }
+
+    #[test]
+    fn config_path_can_be_given_on_the_command_line() {
+        let cli = Cli::try_parse_from(["ftp-server", "--config", "/etc/ftp-kafka.toml"]).unwrap();
+        assert_eq!(cli.config, std::path::PathBuf::from("/etc/ftp-kafka.toml"));
+    }
 }

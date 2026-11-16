@@ -44,6 +44,7 @@ An optional `[server]` table holds settings for the server itself:
 
 | Field | Required | Meaning |
 |---|---|---|
+| `port` | No (default `2121`) | TCP port the FTP server listens on |
 | `log_level` | No (default `info`) | Least severe messages logged: `trace`, `debug`, `info`, `warn` or `error` |
 
 The server won't start if `brokers` or `default_topic` is missing, if `sasl_mechanism` is missing under
@@ -69,7 +70,9 @@ logins succeed while the broker is unreachable.
 cargo run
 ```
 
-The server listens on `0.0.0.0:2121`. Passive mode ports are `50000–65535`.
+The server listens on `0.0.0.0:2121`, or on the `[server] port` from `config.toml`. Passive mode ports are `50000–65535`.
+
+The server reads `config.toml` from the current directory. Use `--config <path>` (or `-c`) to read a different file.
 
 ## Usage
 

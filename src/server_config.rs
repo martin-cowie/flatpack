@@ -1,11 +1,21 @@
 use serde::Deserialize;
 
+const DEFAULT_PORT: u16 = 2121;
+
 /// Server settings, loaded from the optional `[server]` table in `config.toml`.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
+    /// The TCP port the FTP server listens on; 2121 when left out.
+    pub port: u16,
     /// The least severe messages to log; `info` when left out.
     pub log_level: LogLevel,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        ServerConfig { port: DEFAULT_PORT, log_level: LogLevel::default() }
+    }
 }
 
 /// How verbose the server's log is.
@@ -32,33 +42,20 @@ impl LogLevel {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct ConfigFile {
-    #[serde(default)]
-    server: ServerConfig,
-}
-
-impl ServerConfig {
-    /// Reads the `[server]` table from the TOML file at `path`.
-    ///
-    /// # Errors
-    /// Returns an error if the file cannot be read or is not valid TOML, or the table has an unknown value.
-    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(Self::parse(&std::fs::read_to_string(path)?)?)
-    }
-
-    fn parse(text: &str) -> Result<Self, toml::de::Error> {
-        Ok(toml::from_str::<ConfigFile>(text)?.server)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+
+    const KAFKA_TABLE: &str = "[kafka]\nbrokers = \"b:9092\"\ndefault_topic = \"t\"\n";
+
+    fn parse(server_table: &str) -> Result<ServerConfig, toml::de::Error> {
+        Config::parse(&format!("{server_table}\n{KAFKA_TABLE}")).map(|config| config.server)
+    }
 
     #[test]
     fn server_table_is_optional_and_log_level_defaults_to_info() {
-        let config = ServerConfig::parse("[kafka]\nbrokers = \"b:9092\"\ndefault_topic = \"t\"\n").unwrap();
+        let config = parse("").unwrap();
         assert_eq!(config.log_level, LogLevel::Info);
     }
 
@@ -71,15 +68,33 @@ mod tests {
             ("warn", LogLevel::Warn),
             ("error", LogLevel::Error),
         ] {
-            let config = ServerConfig::parse(&format!("[server]\nlog_level = \"{name}\"\n")).unwrap();
+            let config = parse(&format!("[server]\nlog_level = \"{name}\"\n")).unwrap();
             assert_eq!(config.log_level, expected, "{name}");
         }
     }
 
     #[test]
     fn rejects_an_unknown_log_level() {
-        let err = ServerConfig::parse("[server]\nlog_level = \"loud\"\n").unwrap_err();
+        let err = parse("[server]\nlog_level = \"loud\"\n").unwrap_err();
         assert!(err.to_string().contains("log_level") || err.to_string().contains("loud"), "{err}");
+    }
+
+    #[test]
+    fn port_defaults_to_2121() {
+        assert_eq!(parse("").unwrap().port, DEFAULT_PORT);
+    }
+
+    #[test]
+    fn reads_the_port() {
+        assert_eq!(parse("[server]\nport = 2200\n").unwrap().port, 2200);
+    }
+
+    #[test]
+    fn rejects_an_invalid_port() {
+        for value in ["70000", "-1", "\"ftp\""] {
+            let err = parse(&format!("[server]\nport = {value}\n")).unwrap_err();
+            assert!(err.to_string().contains("port") || err.to_string().contains(value), "{value}: {err}");
+        }
     }
 
     #[test]

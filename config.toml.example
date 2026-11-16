@@ -1,4 +1,7 @@
 [server]
+# TCP port the FTP server listens on
+port = 2121
+
 # trace, debug, info, warn or error
 log_level = "info"
 

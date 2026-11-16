@@ -57,13 +57,11 @@ impl TestServer {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), config_toml).unwrap();
-
         let port = free_port();
+        std::fs::write(dir.path().join("config.toml"), with_port(config_toml, port)).unwrap();
+
         let child = Command::new(env!("CARGO_BIN_EXE_ftp-server"))
             .current_dir(dir.path())
-            .arg("--port")
-            .arg(port.to_string())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -79,8 +77,6 @@ impl TestServer {
     pub fn start_conflicting(existing: &TestServer) -> Child {
         Command::new(env!("CARGO_BIN_EXE_ftp-server"))
             .current_dir(existing._dir.path())
-            .arg("--port")
-            .arg(existing.port.to_string())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -121,12 +117,10 @@ pub fn run_until_exit(config_toml: &str) -> std::process::Output {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("config.toml"), config_toml).unwrap();
+    std::fs::write(dir.path().join("config.toml"), with_port(config_toml, free_port())).unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_ftp-server"))
         .current_dir(dir.path())
-        .arg("--port")
-        .arg(free_port().to_string())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -161,13 +155,11 @@ pub fn log_until(config_toml: &str, trigger: impl FnOnce(u16), until: &str) -> S
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("config.toml"), config_toml).unwrap();
-
     let port = free_port();
+    std::fs::write(dir.path().join("config.toml"), with_port(config_toml, port)).unwrap();
+
     let mut child = Command::new(env!("CARGO_BIN_EXE_ftp-server"))
         .current_dir(dir.path())
-        .arg("--port")
-        .arg(port.to_string())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -215,6 +207,22 @@ fn wait_until_accepting_connections(port: u16) {
         assert!(Instant::now() < deadline, "ftp-server did not start accepting connections on port {port}");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Returns `config_toml` with `[server] port` set, keeping any other `[server]` settings.
+///
+/// Text that is not valid TOML is returned unchanged, so the server can report the error.
+fn with_port(config_toml: &str, port: u16) -> String {
+    let Ok(mut config) = config_toml.parse::<toml::Table>() else {
+        return config_toml.to_string();
+    };
+    let server = config
+        .entry("server")
+        .or_insert_with(|| toml::Table::new().into())
+        .as_table_mut()
+        .expect("[server] is a table");
+    server.insert("port".to_string(), i64::from(port).into());
+    config.to_string()
 }
 
 fn free_port() -> u16 {

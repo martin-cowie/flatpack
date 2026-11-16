@@ -109,18 +109,7 @@ impl TryFrom<RawKafkaConfig> for KafkaConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct ConfigFile {
-    kafka: KafkaConfig,
-}
-
 impl KafkaConfig {
-    pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let content = std::fs::read_to_string(path)?;
-        let config: ConfigFile = toml::from_str(&content)?;
-        Ok(config.kafka)
-    }
-
     fn default_message_timeout_ms() -> u64 {
         5000
     }
@@ -267,12 +256,17 @@ impl SiteCommandHandler<MemStorage, KafkaUser> for KafkaSendHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::SessionProducer;
+    use crate::storage::MemStorage;
     use rdkafka::config::ClientConfig;
     use rdkafka::message::Headers;
-    use crate::auth::SessionProducer;
-        use std::sync::Arc;
+    use std::sync::Arc;
 
-    use crate::storage::MemStorage;
+    /// A `config.toml` holding only the `[kafka]` table.
+    #[derive(Debug, Deserialize)]
+    struct Config {
+        kafka: KafkaConfig,
+    }
 
     fn session_user() -> KafkaUser {
         let producer: SessionProducer = ClientConfig::new()
@@ -333,13 +327,13 @@ mod tests {
 
     #[test]
     fn kafka_config_requires_the_kafka_table() {
-        let err = toml::from_str::<ConfigFile>("").unwrap_err();
+        let err = toml::from_str::<Config>("").unwrap_err();
         assert!(err.to_string().contains("kafka"), "{err}");
     }
 
     #[test]
     fn kafka_config_requires_brokers() {
-        let err = toml::from_str::<ConfigFile>(
+        let err = toml::from_str::<Config>(
             r#"
                 [kafka]
                 default_topic = "custom-topic"
@@ -351,7 +345,7 @@ mod tests {
 
     #[test]
     fn kafka_config_requires_default_topic() {
-        let err = toml::from_str::<ConfigFile>(
+        let err = toml::from_str::<Config>(
             r#"
                 [kafka]
                 brokers = "my-broker:9092"
@@ -363,7 +357,7 @@ mod tests {
 
     #[test]
     fn kafka_config_reads_every_field() {
-        let config: ConfigFile = toml::from_str(
+        let config: Config = toml::from_str(
             r#"
                 [kafka]
                 brokers = "kafka1:9092,kafka2:9092"
@@ -379,7 +373,7 @@ mod tests {
 
     #[test]
     fn kafka_config_message_timeout_defaults_to_5000() {
-        let config: ConfigFile = toml::from_str(
+        let config: Config = toml::from_str(
             r#"
                 [kafka]
                 brokers = "my-broker:9092"
@@ -392,7 +386,7 @@ mod tests {
 
     #[test]
     fn kafka_config_security_protocol_defaults_to_plaintext() {
-        let config: ConfigFile = toml::from_str(
+        let config: Config = toml::from_str(
             r#"
                 [kafka]
                 brokers = "my-broker:9092"
@@ -405,7 +399,7 @@ mod tests {
 
     #[test]
     fn kafka_config_auth_timeout_defaults_to_5000_and_can_be_overridden() {
-        let default: ConfigFile = toml::from_str(
+        let default: Config = toml::from_str(
             r#"
                 [kafka]
                 brokers = "my-broker:9092"
@@ -413,7 +407,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let overridden: ConfigFile = toml::from_str(
+        let overridden: Config = toml::from_str(
             r#"
                 [kafka]
                 brokers = "my-broker:9092"
@@ -434,7 +428,7 @@ mod tests {
             ("SASL_PLAINTEXT", "GSSAPI"),
             ("SASL_PLAINTEXT", "OAUTHBEARER"),
         ] {
-            let result = toml::from_str::<ConfigFile>(&format!(
+            let result = toml::from_str::<Config>(&format!(
                 "[kafka]\nbrokers = \"b:9092\"\ndefault_topic = \"t\"\nsecurity_protocol = \"{protocol}\"\nsasl_mechanism = \"{mechanism}\"\n"
             ));
             assert!(result.is_err(), "{protocol} with {mechanism} should be rejected");
@@ -444,7 +438,7 @@ mod tests {
     #[test]
     fn kafka_config_accepts_each_supported_sasl_mechanism() {
         for mechanism in ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"] {
-            let config: ConfigFile = toml::from_str(&format!(
+            let config: Config = toml::from_str(&format!(
                 "[kafka]\nbrokers = \"b:9092\"\ndefault_topic = \"t\"\nsecurity_protocol = \"SASL_PLAINTEXT\"\nsasl_mechanism = \"{mechanism}\"\n"
             ))
             .unwrap();
@@ -454,7 +448,7 @@ mod tests {
 
     #[test]
     fn kafka_config_sasl_plaintext_requires_a_sasl_mechanism() {
-        let err = toml::from_str::<ConfigFile>(
+        let err = toml::from_str::<Config>(
             r#"
                 [kafka]
                 brokers = "my-broker:9092"
@@ -464,30 +458,6 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("sasl_mechanism"), "{err}");
-    }
-
-    #[test]
-    fn kafka_config_from_file_reads_the_kafka_table() {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        std::io::Write::write_all(
-            &mut file,
-            br#"
-                [kafka]
-                brokers = "my-broker:9092"
-                default_topic = "custom-topic"
-            "#,
-        )
-        .unwrap();
-
-        let config = KafkaConfig::from_file(file.path().to_str().unwrap()).unwrap();
-        assert_eq!(config.brokers, "my-broker:9092");
-        assert_eq!(config.default_topic, "custom-topic");
-    }
-
-    #[test]
-    fn kafka_config_from_file_fails_when_file_missing() {
-        let result = KafkaConfig::from_file("/nonexistent/path/config.toml");
-        assert!(result.is_err());
     }
 
     #[test]
