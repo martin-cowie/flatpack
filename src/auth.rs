@@ -17,19 +17,31 @@ use crate::kafka::KafkaConfig;
 /// The Kafka producer a login establishes and its session keeps using.
 pub type SessionProducer = FutureProducer<AuthContext>;
 
-/// Remembers whether the broker rejected the credentials.
+/// What librdkafka has told the client about its broker connection.
+#[derive(Debug, Default)]
+struct BrokerEvents {
+    rejected: AtomicBool,
+    reasons: Mutex<Vec<String>>,
+}
+
+/// Records librdkafka's connection errors for the login probe.
 ///
-/// librdkafka reports a rejected SASL login only through this callback; a metadata
-/// request against such a broker just times out.
+/// librdkafka reports a rejected SASL login, and the reason a broker cannot be
+/// reached, only through this callback; a metadata request against such a
+/// broker just times out.
 #[derive(Debug, Default)]
 pub struct AuthContext {
-    rejected: Arc<AtomicBool>,
+    events: Arc<BrokerEvents>,
 }
 
 impl ClientContext for AuthContext {
-    fn error(&self, error: KafkaError, _reason: &str) {
+    fn error(&self, error: KafkaError, reason: &str) {
         if let KafkaError::Global(RDKafkaErrorCode::Authentication) = error {
-            self.rejected.store(true, Ordering::SeqCst);
+            self.events.rejected.store(true, Ordering::SeqCst);
+        }
+        let mut reasons = self.events.reasons.lock().unwrap();
+        if reasons.len() < MAX_REASONS && !reasons.iter().any(|known| known == reason) {
+            reasons.push(reason.to_string());
         }
     }
 }
@@ -40,6 +52,7 @@ enum ConnectError {
     Unreachable(String),
 }
 
+const MAX_REASONS: usize = 5;
 const PROBE_SLICE: Duration = Duration::from_millis(100);
 
 /// Authenticates FTP logins by connecting to Kafka with the client's credentials.
@@ -133,7 +146,7 @@ impl KafkaAuthenticator {
                 .set("sasl.password", password);
         }
         let context = AuthContext::default();
-        let rejected = Arc::clone(&context.rejected);
+        let events = Arc::clone(&context.events);
         let producer: SessionProducer = client_config
             .create_with_context(context)
             .map_err(|e| ConnectError::Unreachable(e.to_string()))?;
@@ -142,8 +155,12 @@ impl KafkaAuthenticator {
         loop {
             match producer.client().fetch_metadata(None, PROBE_SLICE) {
                 Ok(_) => return Ok(producer),
-                Err(_) if rejected.load(Ordering::SeqCst) => return Err(ConnectError::Rejected),
-                Err(e) if Instant::now() >= deadline => return Err(ConnectError::Unreachable(e.to_string())),
+                Err(_) if events.rejected.load(Ordering::SeqCst) => return Err(ConnectError::Rejected),
+                Err(e) if Instant::now() >= deadline => {
+                    let reasons = events.reasons.lock().unwrap();
+                    let reason = if reasons.is_empty() { e.to_string() } else { reasons.join("; ") };
+                    return Err(ConnectError::Unreachable(reason));
+                }
                 Err(_) => {}
             }
         }
@@ -218,7 +235,10 @@ mod tests {
 
         let result = authenticator.authenticate("alice", &Credentials::from("anything")).await;
 
-        assert!(matches!(result, Err(AuthenticationError::ImplPropagated(..))), "{result:?}");
+        let Err(AuthenticationError::ImplPropagated(message, _)) = result else {
+            panic!("expected a Kafka-unreachable error, got {result:?}");
+        };
+        assert!(message.contains("Connection refused"), "{message}");
     }
 
     #[tokio::test]
