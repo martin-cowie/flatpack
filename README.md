@@ -5,7 +5,7 @@ uploaded files to [Kafka](https://kafka.apache.org/) on request.
 
 ## Features
 
-- Authentication configured via a TOML file
+- FTP login is checked by Kafka: the FTP username and password are the user's Kafka credentials
 - Greeting message sent to every new session: `This is a test FTP server`
 - Each FTP session gets its own isolated in-memory storage, reset when the session ends
 - Supports upload (`STOR`), download (`RETR`), delete (`DELE`), and rename (`RNFR`/`RNTO`)
@@ -14,8 +14,8 @@ uploaded files to [Kafka](https://kafka.apache.org/) on request.
 
 ## Configuration
 
-Users and Kafka settings are defined in `config.toml`, which is not committed to this repository
-(it's listed in `.gitignore` since it holds plaintext passwords). Copy the example to get started:
+Kafka settings are defined in `config.toml`, which is not committed to this repository
+(it's listed in `.gitignore`). Copy the example to get started:
 
 ```sh
 cp config.toml.example config.toml
@@ -26,17 +26,9 @@ cp config.toml.example config.toml
 brokers = "localhost:9092,otherhost:9092"
 default_topic = "rust-topic"
 message_timeout_ms = 5000
-
-[[users]]
-username = "alice"
-password = "changeme"
-
-[[users]]
-username = "bob"
-password = "changeme"
 ```
 
-Edit `config.toml` to set your own usernames, passwords and Kafka settings. The `[kafka]` table is
+Edit `config.toml` to set your own Kafka settings. The `[kafka]` table is
 required:
 
 | Field | Required | Meaning |
@@ -44,8 +36,33 @@ required:
 | `brokers` | Yes | Comma-separated `host:port` list; the server needs only one to be reachable |
 | `default_topic` | Yes | Topic used when `SITE SEND` has no `--topic` |
 | `message_timeout_ms` | No (default `5000`) | How long to wait for a message's delivery |
+| `auth_timeout_ms` | No (default `5000`) | How long a login waits for Kafka to accept or reject the credentials |
+| `security_protocol` | No (default `PLAINTEXT`) | `PLAINTEXT` or `SASL_PLAINTEXT` |
+| `sasl_mechanism` | When `security_protocol` is `SASL_PLAINTEXT` | `PLAIN`, `SCRAM-SHA-256` or `SCRAM-SHA-512` |
 
-The server won't start if `brokers` or `default_topic` is missing.
+An optional `[server]` table holds settings for the server itself:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `port` | No (default `2121`) | TCP port the FTP server listens on |
+| `log_level` | No (default `info`) | Least severe messages logged: `trace`, `debug`, `info`, `warn` or `error` |
+
+The server won't start if `brokers` or `default_topic` is missing, if `sasl_mechanism` is missing under
+`SASL_PLAINTEXT`, or if `security_protocol` or `sasl_mechanism` has any other value.
+
+## Authentication
+
+The server keeps no user accounts. A login succeeds only if the Kafka cluster accepts the username and
+password the FTP client supplies, and the session then publishes to Kafka as that user.
+
+- **`PLAINTEXT`**: the cluster has no authentication, so any username and password is accepted as long
+  as the broker is reachable. The server logs a warning at startup.
+- **`SASL_PLAINTEXT`**: the credentials are sent to Kafka using the configured mechanism. Prefer
+  `SCRAM-SHA-256` or `SCRAM-SHA-512`, which never send the password to Kafka; `PLAIN` does.
+
+Traffic is not encrypted: FTP passwords cross the network in clear text until FTPS is added (#4), and
+Kafka messages are unencrypted until Kafka TLS is. Every login costs a round trip to the broker, and no
+logins succeed while the broker is unreachable.
 
 ## Running
 
@@ -53,7 +70,9 @@ The server won't start if `brokers` or `default_topic` is missing.
 cargo run
 ```
 
-The server listens on `0.0.0.0:2121`. Passive mode ports are `50000–65535`.
+The server listens on `0.0.0.0:2121`, or on the `[server] port` from `config.toml`. Passive mode ports are `50000–65535`.
+
+The server reads `config.toml` from the current directory. Use `--config <path>` (or `-c`) to read a different file.
 
 ## Usage
 

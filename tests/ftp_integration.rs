@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{run_until_exit, TestServer, PASSWORD, USERNAME};
+use common::{log_until, run_until_exit, startup_log, FtpClient, TestServer, PASSWORD, USERNAME};
 
 #[test]
 fn logs_in_with_correct_credentials() {
@@ -17,20 +17,18 @@ fn logs_in_with_correct_credentials() {
 }
 
 #[test]
-fn rejects_wrong_password() {
-    let server = TestServer::start();
+fn rejects_login_when_kafka_is_unreachable() {
+    let server = TestServer::start_with_config(
+        r#"
+            [kafka]
+            brokers = "127.0.0.1:1"
+            default_topic = "rust-topic"
+            auth_timeout_ms = 500
+        "#,
+    );
     let mut client = server.connect();
 
-    let reply = client.login(USERNAME, "wrong-password");
-    assert!(reply.starts_with('5'), "expected a 5xx reply, got: {reply}");
-}
-
-#[test]
-fn rejects_unknown_user() {
-    let server = TestServer::start();
-    let mut client = server.connect();
-
-    let reply = client.login("mallory", PASSWORD);
+    let reply = client.login(USERNAME, PASSWORD);
     assert!(reply.starts_with('5'), "expected a 5xx reply, got: {reply}");
 }
 
@@ -44,7 +42,10 @@ fn stores_and_retrieves_a_file() {
     assert!(store_reply.starts_with('2'), "STOR failed: {store_reply}");
 
     let (retrieve_reply, content) = client.retrieve("hello.txt");
-    assert!(retrieve_reply.starts_with('2'), "RETR failed: {retrieve_reply}");
+    assert!(
+        retrieve_reply.starts_with('2'),
+        "RETR failed: {retrieve_reply}"
+    );
     assert_eq!(content, b"hello world");
 }
 
@@ -76,7 +77,10 @@ fn deletes_a_file() {
     assert!(dele.starts_with('2'), "DELE failed: {dele}");
 
     let (retrieve_reply, _) = client.retrieve("doomed.txt");
-    assert!(retrieve_reply.starts_with('5'), "expected RETR of a deleted file to fail: {retrieve_reply}");
+    assert!(
+        retrieve_reply.starts_with('5'),
+        "expected RETR of a deleted file to fail: {retrieve_reply}"
+    );
 }
 
 #[test]
@@ -89,7 +93,10 @@ fn site_send_without_a_file_name_is_a_syntax_error() {
     client.login(USERNAME, PASSWORD);
 
     let reply = client.command("SITE SEND");
-    assert!(reply.starts_with('5'), "expected a 5xx syntax error, got: {reply}");
+    assert!(
+        reply.starts_with('5'),
+        "expected a 5xx syntax error, got: {reply}"
+    );
 }
 
 #[test]
@@ -103,7 +110,10 @@ fn each_session_gets_isolated_storage() {
     let mut second = server.connect();
     second.login(USERNAME, PASSWORD);
     let (retrieve_reply, _) = second.retrieve("only-in-first-session.txt");
-    assert!(retrieve_reply.starts_with('5'), "second session should not see the first session's files");
+    assert!(
+        retrieve_reply.starts_with('5'),
+        "second session should not see the first session's files"
+    );
 }
 
 #[test]
@@ -111,12 +121,22 @@ fn second_instance_on_the_same_port_fails_to_start_and_says_why() {
     let server = TestServer::start();
     let mut conflicting = TestServer::start_conflicting(&server);
 
-    let status = conflicting.wait().expect("failed to wait on conflicting instance");
-    assert!(!status.success(), "a second instance on the same port should fail to start");
+    let status = conflicting
+        .wait()
+        .expect("failed to wait on conflicting instance");
+    assert!(
+        !status.success(),
+        "a second instance on the same port should fail to start"
+    );
 
     let mut stderr = String::new();
     use std::io::Read;
-    conflicting.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+    conflicting
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
     assert!(
         stderr.contains("already in use") || stderr.contains("FTP server failed to listen"),
         "expected a clear reason in stderr, got: {stderr}"
@@ -125,35 +145,155 @@ fn second_instance_on_the_same_port_fails_to_start_and_says_why() {
 
 #[test]
 fn refuses_to_start_without_the_kafka_table() {
-    let output = run_until_exit(&format!(
+    let output = run_until_exit(
         r#"
-            [[users]]
-            username = "{USERNAME}"
-            password = "{PASSWORD}"
-        "#
-    ));
+        "#,
+    );
 
-    assert!(!output.status.success(), "the server should not start without [kafka]");
+    assert!(
+        !output.status.success(),
+        "the server should not start without [kafka]"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("missing field `kafka`"), "expected a clear reason, got: {stderr}");
-    assert!(!stderr.contains(PASSWORD), "stderr should not reveal passwords: {stderr}");
+    assert!(
+        stderr.contains("missing field `kafka`"),
+        "expected a clear reason, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains(PASSWORD),
+        "stderr should not reveal passwords: {stderr}"
+    );
 }
 
 #[test]
 fn refuses_to_start_without_brokers() {
-    let output = run_until_exit(&format!(
+    let output = run_until_exit(
         r#"
             [kafka]
             default_topic = "rust-topic"
+        "#,
+    );
 
-            [[users]]
-            username = "{USERNAME}"
-            password = "{PASSWORD}"
-        "#
-    ));
-
-    assert!(!output.status.success(), "the server should not start without brokers");
+    assert!(
+        !output.status.success(),
+        "the server should not start without brokers"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("missing field `brokers`"), "expected a clear reason, got: {stderr}");
-    assert!(!stderr.contains(PASSWORD), "stderr should not reveal passwords: {stderr}");
+    assert!(
+        stderr.contains("missing field `brokers`"),
+        "expected a clear reason, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains(PASSWORD),
+        "stderr should not reveal passwords: {stderr}"
+    );
+}
+
+#[test]
+fn warns_at_startup_that_plaintext_logins_are_unauthenticated() {
+    let log = startup_log(
+        r#"
+            [kafka]
+            brokers = "127.0.0.1:1"
+            default_topic = "rust-topic"
+        "#,
+    );
+
+    assert!(
+        log.contains("not authenticated"),
+        "expected the PLAINTEXT warning, got: {log}"
+    );
+}
+
+#[test]
+fn does_not_warn_at_startup_when_sasl_authenticates_logins() {
+    let log = startup_log(
+        r#"
+            [kafka]
+            brokers = "127.0.0.1:1"
+            default_topic = "rust-topic"
+            security_protocol = "SASL_PLAINTEXT"
+            sasl_mechanism = "SCRAM-SHA-256"
+        "#,
+    );
+
+    assert!(
+        !log.contains("not authenticated"),
+        "unexpected PLAINTEXT warning: {log}"
+    );
+}
+
+#[test]
+fn logs_why_a_login_failed_when_kafka_is_unreachable() {
+    let log = log_until(
+        r#"
+            [kafka]
+            brokers = "127.0.0.1:1"
+            default_topic = "rust-topic"
+            auth_timeout_ms = 1000
+        "#,
+        |port| {
+            FtpClient::connect(port).login(USERNAME, PASSWORD);
+        },
+        "Failed login attempt",
+    );
+
+    assert!(log.contains("Kafka is unreachable"), "{log}");
+    assert!(log.contains("Connection refused"), "{log}");
+}
+
+fn failed_login_log(log_level_line: &str) -> String {
+    log_until(
+        &format!(
+            r#"
+                [server]
+                {log_level_line}
+
+                [kafka]
+                brokers = "127.0.0.1:1"
+                default_topic = "rust-topic"
+                auth_timeout_ms = 500
+            "#
+        ),
+        |port| {
+            FtpClient::connect(port).login(USERNAME, PASSWORD);
+        },
+        "Failed login attempt",
+    )
+}
+
+#[test]
+fn log_level_defaults_to_info_which_hides_debug_messages() {
+    let log = failed_login_log("");
+
+    assert!(log.contains("INFO"), "{log}");
+    assert!(!log.contains("DEBG"), "{log}");
+}
+
+#[test]
+fn log_level_debug_shows_debug_messages() {
+    let log = failed_login_log(r#"log_level = "debug""#);
+
+    assert!(log.contains("DEBG"), "{log}");
+}
+
+#[test]
+fn refuses_to_start_with_an_unknown_log_level() {
+    let output = run_until_exit(
+        r#"
+            [server]
+            log_level = "loud"
+
+            [kafka]
+            brokers = "127.0.0.1:1"
+            default_topic = "rust-topic"
+        "#,
+    );
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("loud") || stderr.contains("log_level"),
+        "expected a clear reason, got: {stderr}"
+    );
 }

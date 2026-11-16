@@ -1,12 +1,19 @@
+[server]
+# TCP port the FTP server listens on
+port = 2121
+
+# trace, debug, info, warn or error
+log_level = "info"
+
 [kafka]
-brokers = "localhost:9092"
+brokers = "localhost:19092"
 default_topic = "rust-topic"
 message_timeout_ms = 5000
+auth_timeout_ms = 5000
 
-[[users]]
-username = "alice"
-password = "changeme"
+# Kafka decides who may log in. With PLAINTEXT, any username and password is accepted.
+security_protocol = "PLAINTEXT"
 
-[[users]]
-username = "bob"
-password = "changeme"
+# To check logins against Kafka credentials instead:
+# security_protocol = "SASL_PLAINTEXT"
+# sasl_mechanism = "SCRAM-SHA-256"   # or "SCRAM-SHA-512", or "PLAIN"

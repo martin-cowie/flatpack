@@ -21,7 +21,7 @@ async-trait = "0.1"
 bytes = "1"
 clap = { version = "4.6.1", features = ["derive"] }
 libunftp = { version = "0.23.1", default-features = false, features = ["ring"] }
-rdkafka = "0.39.0"
+rdkafka = { version = "0.39.0", features = ["ssl"] }
 serde = { version = "1", features = ["derive"] }
 shlex = "2.0.1"
 slog = "2"

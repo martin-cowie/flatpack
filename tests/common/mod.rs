@@ -6,6 +6,10 @@
 //! module, since each one only exercises the parts it needs.
 #![allow(dead_code)]
 
+pub mod sasl_kafka;
+
+use rdkafka::mocking::MockCluster;
+use rdkafka::producer::DefaultProducerContext;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
@@ -24,6 +28,7 @@ pub const PASSWORD: &str = "password123";
 static ONE_SERVER_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 pub struct TestServer {
+    _kafka: Option<MockCluster<'static, DefaultProducerContext>>,
     child: Child,
     port: u16,
     _dir: tempfile::TempDir,
@@ -31,20 +36,20 @@ pub struct TestServer {
 }
 
 impl TestServer {
-    /// Spawns the server with a `config.toml` for one user, alice, on a free port.
-    /// Kafka points at `localhost:9092` and topic `rust-topic`.
+    /// Spawns the server on a free port, backed by its own in-process mock Kafka
+    /// cluster and the topic `rust-topic`.
     pub fn start() -> Self {
-        Self::start_with_config(&format!(
+        let cluster = MockCluster::new(1).expect("failed to start the mock Kafka cluster");
+        let mut server = Self::start_with_config(&format!(
             r#"
                 [kafka]
-                brokers = "localhost:9092"
+                brokers = "{}"
                 default_topic = "rust-topic"
-
-                [[users]]
-                username = "{USERNAME}"
-                password = "{PASSWORD}"
-            "#
-        ))
+            "#,
+            cluster.bootstrap_servers()
+        ));
+        server._kafka = Some(cluster);
+        server
     }
 
     pub fn start_with_config(config_toml: &str) -> Self {
@@ -52,19 +57,23 @@ impl TestServer {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml"), config_toml).unwrap();
-
         let port = free_port();
+        std::fs::write(dir.path().join("config.toml"), with_port(config_toml, port)).unwrap();
+
         let child = Command::new(env!("CARGO_BIN_EXE_ftp-server"))
             .current_dir(dir.path())
-            .arg("--port")
-            .arg(port.to_string())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .expect("failed to spawn ftp-server binary");
 
-        let server = TestServer { child, port, _dir: dir, _turn: turn };
+        let server = TestServer {
+            _kafka: None,
+            child,
+            port,
+            _dir: dir,
+            _turn: turn,
+        };
         server.wait_until_accepting_connections();
         server
     }
@@ -74,8 +83,6 @@ impl TestServer {
     pub fn start_conflicting(existing: &TestServer) -> Child {
         Command::new(env!("CARGO_BIN_EXE_ftp-server"))
             .current_dir(existing._dir.path())
-            .arg("--port")
-            .arg(existing.port.to_string())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -89,7 +96,10 @@ impl TestServer {
                 return;
             }
             if Instant::now() > deadline {
-                panic!("ftp-server did not start listening on port {} in time", self.port);
+                panic!(
+                    "ftp-server did not start listening on port {} in time",
+                    self.port
+                );
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -116,12 +126,14 @@ pub fn run_until_exit(config_toml: &str) -> std::process::Output {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("config.toml"), config_toml).unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        with_port(config_toml, free_port()),
+    )
+    .unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_ftp-server"))
         .current_dir(dir.path())
-        .arg("--port")
-        .arg(free_port().to_string())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -138,6 +150,101 @@ pub fn run_until_exit(config_toml: &str) -> std::process::Output {
     child.wait_with_output().unwrap()
 }
 
+/// Starts the server and returns everything it logged up to and including its
+/// "listening" line, then stops it.
+///
+/// Startup messages are logged before that line, so reading up to it sees all
+/// of them without sleeping. Fails the test if it never appears within ten seconds.
+pub fn startup_log(config_toml: &str) -> String {
+    log_until(config_toml, |_port| {}, "listening on")
+}
+
+/// Starts the server, waits until it is listening, runs `trigger` with its port,
+/// and returns everything it logged up to the first line containing `until`.
+///
+/// Fails the test if no such line appears within ten seconds of starting.
+pub fn log_until(config_toml: &str, trigger: impl FnOnce(u16), until: &str) -> String {
+    let _turn = ONE_SERVER_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let port = free_port();
+    std::fs::write(dir.path().join("config.toml"), with_port(config_toml, port)).unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ftp-server"))
+        .current_dir(dir.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn ftp-server binary");
+
+    let stderr = child.stderr.take().unwrap();
+    let (lines, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut log = String::new();
+    let mut trigger = Some(trigger);
+    let mut found = false;
+    while !found {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        let Ok(line) = received.recv_timeout(remaining) else {
+            break;
+        };
+        log.push_str(&line);
+        log.push('\n');
+        if line.contains("listening on") {
+            if let Some(trigger) = trigger.take() {
+                wait_until_accepting_connections(port);
+                trigger(port);
+            }
+        }
+        found = line.contains(until);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(found, "ftp-server never logged {until:?}; it logged: {log}");
+    log
+}
+
+/// The server logs that it is listening just before it binds, so a client that
+/// connects on seeing the log line can be refused.
+fn wait_until_accepting_connections(port: u16) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(
+            Instant::now() < deadline,
+            "ftp-server did not start accepting connections on port {port}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Returns `config_toml` with `[server] port` set, keeping any other `[server]` settings.
+///
+/// Text that is not valid TOML is returned unchanged, so the server can report the error.
+fn with_port(config_toml: &str, port: u16) -> String {
+    let Ok(mut config) = config_toml.parse::<toml::Table>() else {
+        return config_toml.to_string();
+    };
+    let server = config
+        .entry("server")
+        .or_insert_with(|| toml::Table::new().into())
+        .as_table_mut()
+        .expect("[server] is a table");
+    server.insert("port".to_string(), i64::from(port).into());
+    config.to_string()
+}
+
 fn free_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.local_addr().unwrap().port()
@@ -150,11 +257,16 @@ pub struct FtpClient {
 }
 
 impl FtpClient {
-    fn connect(port: u16) -> Self {
+    pub fn connect(port: u16) -> Self {
         let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        let mut client = FtpClient { reader: BufReader::new(stream) };
+        let mut client = FtpClient {
+            reader: BufReader::new(stream),
+        };
         let greeting = client.read_response();
-        assert!(greeting.starts_with("220"), "unexpected greeting: {greeting}");
+        assert!(
+            greeting.starts_with("220"),
+            "unexpected greeting: {greeting}"
+        );
         client
     }
 
@@ -208,7 +320,10 @@ impl FtpClient {
         let stream = self.reader.get_mut();
         write!(stream, "STOR {remote_name}\r\n").unwrap();
         let opening = self.read_response();
-        assert!(opening.starts_with("150"), "STOR did not open a transfer: {opening}");
+        assert!(
+            opening.starts_with("150"),
+            "STOR did not open a transfer: {opening}"
+        );
 
         data.write_all(content).unwrap();
         data.shutdown(std::net::Shutdown::Write).unwrap();

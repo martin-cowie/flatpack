@@ -77,10 +77,6 @@ impl MockKafka {
                 [kafka]
                 brokers = "{brokers}"
                 default_topic = "{TOPIC}"
-
-                [[users]]
-                username = "{USERNAME}"
-                password = "{PASSWORD}"
             "#,
             brokers = self.cluster.bootstrap_servers(),
         ))
@@ -123,7 +119,10 @@ fn header_pairs(message: &OwnedMessage) -> Vec<(String, String)> {
             headers
                 .iter()
                 .map(|header| {
-                    let value = header.value.map(String::from_utf8_lossy).unwrap_or_default();
+                    let value = header
+                        .value
+                        .map(String::from_utf8_lossy)
+                        .unwrap_or_default();
                     (header.key.to_string(), value.into_owned())
                 })
                 .collect()

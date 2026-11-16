@@ -8,7 +8,7 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 use unftp_core::{
-    auth::DefaultUser,
+    auth::UserDetail,
     storage::{Error, ErrorKind, Fileinfo, Metadata, StorageBackend},
 };
 
@@ -69,12 +69,12 @@ impl MemStorage {
 }
 
 #[async_trait]
-impl StorageBackend<DefaultUser> for MemStorage {
+impl<U: UserDetail> StorageBackend<U> for MemStorage {
     type Metadata = MemMetadata;
 
     async fn metadata<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         path: P,
     ) -> Result<MemMetadata, Error> {
         let key = Self::normalize(path.as_ref());
@@ -101,7 +101,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn list<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         path: P,
     ) -> Result<Vec<Fileinfo<PathBuf, MemMetadata>>, Error> {
         let key = Self::normalize(path.as_ref());
@@ -128,7 +128,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn get<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         path: P,
         start_pos: u64,
     ) -> Result<Box<dyn AsyncRead + Send + Sync + Unpin>, Error> {
@@ -148,7 +148,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn put<P, R>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         mut input: R,
         path: P,
         _start_pos: u64,
@@ -176,7 +176,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn del<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         path: P,
     ) -> Result<(), Error> {
         let key = Self::normalize(path.as_ref());
@@ -193,7 +193,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn mkd<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         _path: P,
     ) -> Result<(), Error> {
         Err(Error::new(
@@ -204,7 +204,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn rename<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         from: P,
         to: P,
     ) -> Result<(), Error> {
@@ -225,7 +225,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn rmd<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         _path: P,
     ) -> Result<(), Error> {
         Err(Error::new(
@@ -236,7 +236,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 
     async fn cwd<P: AsRef<Path> + Send + fmt::Debug>(
         &self,
-        _user: &DefaultUser,
+        _user: &U,
         path: P,
     ) -> Result<(), Error> {
         let key = Self::normalize(path.as_ref());
@@ -254,6 +254,7 @@ impl StorageBackend<DefaultUser> for MemStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unftp_core::auth::DefaultUser;
 
     fn user() -> DefaultUser {
         DefaultUser
@@ -296,7 +297,11 @@ mod tests {
     #[tokio::test]
     async fn put_propagates_a_read_error() {
         let storage = MemStorage::new();
-        let err = storage.put(&user(), FailingReader, "x.txt", 0).await.err().unwrap();
+        let err = storage
+            .put(&user(), FailingReader, "x.txt", 0)
+            .await
+            .err()
+            .unwrap();
         assert_eq!(err.kind(), ErrorKind::LocalError);
     }
 
@@ -319,7 +324,12 @@ mod tests {
     async fn metadata_of_known_file_reports_its_size() {
         let storage = MemStorage::new();
         storage
-            .put(&user(), std::io::Cursor::new(b"hello".to_vec()), "hello.txt", 0)
+            .put(
+                &user(),
+                std::io::Cursor::new(b"hello".to_vec()),
+                "hello.txt",
+                0,
+            )
             .await
             .unwrap();
 
@@ -332,7 +342,12 @@ mod tests {
     async fn put_then_get_round_trips_file_content() {
         let storage = MemStorage::new();
         let size = storage
-            .put(&user(), std::io::Cursor::new(b"hello world".to_vec()), "hello.txt", 0)
+            .put(
+                &user(),
+                std::io::Cursor::new(b"hello world".to_vec()),
+                "hello.txt",
+                0,
+            )
             .await
             .unwrap();
         assert_eq!(size, 11);
@@ -345,7 +360,12 @@ mod tests {
     async fn get_honours_start_pos() {
         let storage = MemStorage::new();
         storage
-            .put(&user(), std::io::Cursor::new(b"hello world".to_vec()), "hello.txt", 0)
+            .put(
+                &user(),
+                std::io::Cursor::new(b"hello world".to_vec()),
+                "hello.txt",
+                0,
+            )
             .await
             .unwrap();
 
@@ -421,7 +441,12 @@ mod tests {
     async fn rename_moves_file_content_to_the_new_name() {
         let storage = MemStorage::new();
         storage
-            .put(&user(), std::io::Cursor::new(b"hello".to_vec()), "old.txt", 0)
+            .put(
+                &user(),
+                std::io::Cursor::new(b"hello".to_vec()),
+                "old.txt",
+                0,
+            )
             .await
             .unwrap();
 
@@ -435,7 +460,10 @@ mod tests {
     #[tokio::test]
     async fn rename_of_unknown_file_errors() {
         let storage = MemStorage::new();
-        let err = storage.rename(&user(), "missing.txt", "new.txt").await.unwrap_err();
+        let err = storage
+            .rename(&user(), "missing.txt", "new.txt")
+            .await
+            .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::PermanentFileNotAvailable);
     }
 
@@ -470,9 +498,14 @@ mod tests {
     async fn sessions_get_independent_storage() {
         let a = MemStorage::new();
         let b = MemStorage::new();
-        a.put(&user(), std::io::Cursor::new(b"only in a".to_vec()), "f.txt", 0)
-            .await
-            .unwrap();
+        a.put(
+            &user(),
+            std::io::Cursor::new(b"only in a".to_vec()),
+            "f.txt",
+            0,
+        )
+        .await
+        .unwrap();
 
         assert!(b.metadata(&user(), "f.txt").await.is_err());
     }
