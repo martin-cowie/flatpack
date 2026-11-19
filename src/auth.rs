@@ -131,11 +131,11 @@ fn claim(
     username: &str,
 ) -> Option<SessionProducer> {
     let queue = handoff.get_mut(username)?;
-    let producer = queue.pop();
+    let result = queue.pop();
     if queue.is_empty() {
         handoff.remove(username);
     }
-    producer
+    result
 }
 
 impl std::fmt::Debug for KafkaAuthenticator {
@@ -261,6 +261,7 @@ mod tests {
     use super::*;
     use crate::kafka::{KafkaConfig, SaslMechanism, SecurityProtocol};
     use rdkafka::mocking::MockCluster;
+    use rdkafka::producer::DefaultProducerContext;
     use unftp_core::auth::{Authenticator, Credentials, UserDetailProvider};
 
     fn discard_logger() -> slog::Logger {
@@ -276,6 +277,19 @@ mod tests {
             security_protocol: SecurityProtocol::Plaintext,
             sasl_mechanism: None,
         }
+    }
+
+    fn authenticator_for(
+        cluster: &MockCluster<'static, DefaultProducerContext>,
+    ) -> KafkaAuthenticator {
+        KafkaAuthenticator::new(config(&cluster.bootstrap_servers()), discard_logger())
+    }
+
+    async fn log_in(authenticator: &KafkaAuthenticator, username: &str) -> Principal {
+        authenticator
+            .authenticate(username, &Credentials::from("x"))
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -332,14 +346,10 @@ mod tests {
     #[tokio::test]
     async fn claiming_the_last_waiting_login_removes_the_username_from_the_handoff() {
         let cluster = MockCluster::new(1).unwrap();
-        let authenticator =
-            KafkaAuthenticator::new(config(&cluster.bootstrap_servers()), discard_logger());
+        let authenticator = authenticator_for(&cluster);
         let provider = authenticator.user_detail_provider();
         for username in ["alice", "bob"] {
-            let principal = authenticator
-                .authenticate(username, &Credentials::from("x"))
-                .await
-                .unwrap();
+            let principal = log_in(&authenticator, username).await;
             provider.provide_user_detail(&principal).await.unwrap();
         }
 
@@ -349,17 +359,10 @@ mod tests {
     #[tokio::test]
     async fn concurrent_logins_for_one_username_each_get_a_producer() {
         let cluster = MockCluster::new(1).unwrap();
-        let authenticator =
-            KafkaAuthenticator::new(config(&cluster.bootstrap_servers()), discard_logger());
+        let authenticator = authenticator_for(&cluster);
         let provider = authenticator.user_detail_provider();
-        let first = authenticator
-            .authenticate("alice", &Credentials::from("x"))
-            .await
-            .unwrap();
-        let second = authenticator
-            .authenticate("alice", &Credentials::from("x"))
-            .await
-            .unwrap();
+        let first = log_in(&authenticator, "alice").await;
+        let second = log_in(&authenticator, "alice").await;
 
         provider.provide_user_detail(&first).await.unwrap();
         assert_eq!(authenticator.handoff.lock().unwrap()["alice"].len(), 1);
