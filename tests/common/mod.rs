@@ -282,6 +282,15 @@ impl FtpClient {
         self.read_response()
     }
 
+    /// Sends one command line and asserts that the response starts with `code`.
+    ///
+    /// Returns the (possibly multi-line) response.
+    pub fn command_expecting(&mut self, code: &str, line: &str) -> String {
+        let result = self.command(line);
+        assert!(result.starts_with(code), "{line} failed: {result}");
+        result
+    }
+
     fn read_response(&mut self) -> String {
         let mut first_line = String::new();
         self.reader.read_line(&mut first_line).unwrap();

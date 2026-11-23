@@ -91,17 +91,24 @@ lftp -u alice,password123 ftp://127.0.0.1:2121
 | `DELE <file>` | Delete a file |
 | `RNFR`/`RNTO` | Rename a file |
 | `SITE SEND [--topic <topic>] [--key <key>] [--header <name>=<value>]... <file>...` | Publish one or more uploaded files to Kafka |
-| `SITE TOPICS` | List the topics on the Kafka cluster, one per line |
-| `SITE TOPIC [<topic>]` | Report the Session topic, or set it |
+| `SITE TOPICS [<glob>]` | List the topics on the Kafka cluster, one per line |
+| `SITE TOPIC [-c] [<topic>]` | Report the Session topic, set it, or with `-c` create the topic and set it |
 
 `SITE SEND` publishes each named file as a separate Kafka message. `--key` defaults to each file's
 name. The topic is, in order of precedence: `--topic`, then the Session topic, then
 `config.toml`'s `[kafka] default_topic`.
 
-`SITE TOPICS` lists the cluster's topics, queried with the Session's Kafka credentials; internal
-topics (names starting `__`) are hidden. `SITE TOPIC` reports the Session topic, which starts as
-`default_topic`. `SITE TOPIC <topic>` sets it for the rest of the Session, and is refused with a
-`550` reply if the topic does not exist on the cluster.
+`SITE TOPICS` lists the cluster's topics, sorted, queried with the Session's Kafka credentials. An
+optional glob narrows the list: `*` matches any run of characters and `?` matches one, and the whole
+name must match (`SITE TOPICS 'orders-*'`). Internal topics, whose names start with `_`, are hidden
+unless the glob itself starts with `_`.
+
+`SITE TOPIC` reports the Session topic, which starts as `default_topic`. `SITE TOPIC <topic>` sets it
+for the rest of the Session, and is refused with `550` if the topic does not exist on the cluster.
+`SITE TOPIC -c <topic>` creates the topic with the broker's default partitions and replication, then
+sets it; a name Kafka would reject gets `501`, and an existing topic or a refusal by the broker gets
+`550`. Creating a topic needs the Session's credentials to be allowed to, and keeps the login's
+Kafka credentials in memory for the Session (see ADR 0002).
 
 `--header` adds a Kafka message header and may be repeated; every message in the command gets the
 same headers, in the order given. The value is everything after the first `=`, so it may itself

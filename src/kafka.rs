@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use clap::Parser;
-use libunftp::options::{Reply, ReplyCode, SiteCommandContext, SiteCommandHandler};
+use libunftp::options::{Reply, ReplyCode, SiteCommandContext};
 use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::FutureRecord;
 use serde::Deserialize;
@@ -9,6 +9,7 @@ use tokio::io::AsyncReadExt;
 use unftp_core::storage::StorageBackend;
 
 use crate::auth::KafkaUser;
+use crate::session_command::{parse_arguments, SessionCommand};
 use crate::storage::MemStorage;
 
 // MARK: Config
@@ -142,14 +143,7 @@ struct SendArgs {
 
 impl SendArgs {
     fn parse(raw: &str) -> Result<Self, Reply> {
-        let Some(tokens) = shlex::split(raw) else {
-            return Err(Reply::new(
-                ReplyCode::ParameterSyntaxError,
-                "Unbalanced quotes in arguments",
-            ));
-        };
-        let args = Self::try_parse_from(tokens)
-            .map_err(|e| Reply::new(ReplyCode::ParameterSyntaxError, &e.to_string()))?;
+        let args: Self = parse_arguments(raw)?;
         if args.file_names.is_empty() {
             return Err(Reply::new(
                 ReplyCode::ParameterSyntaxError,
@@ -185,36 +179,25 @@ fn make_headers(pairs: &[(String, String)]) -> OwnedHeaders {
 
 // MARK: Implementation
 
-/// Returns the Session's user, or the reply refusing a command from a client that is not logged in.
-pub(crate) fn logged_in_user(
-    context: &SiteCommandContext<MemStorage, KafkaUser>,
-) -> Result<&KafkaUser, Reply> {
-    context
-        .user
-        .as_ref()
-        .as_ref()
-        .ok_or_else(|| Reply::new(ReplyCode::NotLoggedIn, "Not logged in"))
-}
-
 /// Publishes uploaded files to Kafka: `SITE SEND`.
 #[derive(Debug)]
 pub struct KafkaSendHandler;
 
 #[async_trait]
-impl SiteCommandHandler<MemStorage, KafkaUser> for KafkaSendHandler {
-    async fn handle(&self, context: &SiteCommandContext<MemStorage, KafkaUser>) -> Reply {
+impl SessionCommand for KafkaSendHandler {
+    async fn run(
+        &self,
+        user: &KafkaUser,
+        context: &SiteCommandContext<MemStorage, KafkaUser>,
+    ) -> Reply {
         // Get and verify arguments
         let args = match SendArgs::parse(&context.arguments) {
             Ok(args) => args,
             Err(reply) => return reply,
         };
-        let user = match logged_in_user(context) {
-            Ok(user) => user,
-            Err(reply) => return reply,
-        };
         let topic = args.topic.unwrap_or_else(|| user.session_topic());
 
-        let producer = &user.producer;
+        let producer = user.producer();
 
         // Send each file as a discrete message
         let mut results = Vec::new();
@@ -268,11 +251,10 @@ impl SiteCommandHandler<MemStorage, KafkaUser> for KafkaSendHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::SessionProducer;
-    use crate::storage::MemStorage;
-    use rdkafka::config::ClientConfig;
+    use crate::session_command::LoggedIn;
+    use crate::test_support::{context, is_code, session_user};
+    use libunftp::options::SiteCommandHandler;
     use rdkafka::message::Headers;
-    use std::sync::Arc;
 
     /// A `config.toml` holding only the `[kafka]` table.
     #[derive(Debug, Deserialize)]
@@ -280,52 +262,24 @@ mod tests {
         kafka: KafkaConfig,
     }
 
-    fn session_user() -> KafkaUser {
-        let producer: SessionProducer = ClientConfig::new()
-            .set("bootstrap.servers", "127.0.0.1:1")
-            .create_with_context(crate::auth::AuthContext::default())
-            .unwrap();
-        KafkaUser::new("alice".to_string(), producer, "test-topic".to_string())
-    }
-
-    fn context(
-        arguments: &str,
-        user: Option<KafkaUser>,
-        storage: MemStorage,
-    ) -> SiteCommandContext<MemStorage, KafkaUser> {
-        SiteCommandContext {
-            command: "SEND".to_string(),
-            arguments: arguments.to_string(),
-            username: user.as_ref().map(|_| "alice".to_string()),
-            storage: Arc::new(storage),
-            user: Arc::new(user),
-            logger: slog::Logger::root(slog::Discard, slog::o!()),
-        }
-    }
-
-    fn is_code(reply: &Reply, expected: ReplyCode) -> bool {
-        matches!(reply, Reply::CodeAndMsg { code, .. } if *code == expected)
-            || matches!(reply, Reply::MultiLine { code, .. } if *code == expected)
+    fn send_context(arguments: &str) -> SiteCommandContext<MemStorage, KafkaUser> {
+        context(
+            "SEND",
+            arguments,
+            Some(session_user("127.0.0.1:1", "test-topic")),
+        )
     }
 
     #[tokio::test]
-    async fn handle_rejects_missing_file_names_without_touching_storage_or_kafka() {
-        let ctx = context("", None, MemStorage::new());
-        let reply = KafkaSendHandler.handle(&ctx).await;
+    async fn run_rejects_missing_file_names_without_touching_storage_or_kafka() {
+        let reply = LoggedIn(KafkaSendHandler).handle(&send_context("")).await;
         assert!(is_code(&reply, ReplyCode::ParameterSyntaxError));
     }
 
     #[tokio::test]
-    async fn handle_rejects_when_not_logged_in() {
-        let ctx = context("hello.txt", None, MemStorage::new());
-        let reply = KafkaSendHandler.handle(&ctx).await;
-        assert!(is_code(&reply, ReplyCode::NotLoggedIn));
-    }
-
-    #[tokio::test]
-    async fn handle_reports_missing_files_per_name_without_a_reachable_broker() {
-        let ctx = context("missing.txt", Some(session_user()), MemStorage::new());
-        let reply = KafkaSendHandler.handle(&ctx).await;
+    async fn run_reports_missing_files_per_name_without_a_reachable_broker() {
+        let ctx = send_context("missing.txt");
+        let reply = LoggedIn(KafkaSendHandler).handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::LocalError));
     }
 
@@ -508,13 +462,7 @@ mod tests {
     #[test]
     fn rejects_header_without_equals() {
         let err = SendArgs::parse("--header noequals f.txt").unwrap_err();
-        assert!(matches!(
-            err,
-            Reply::CodeAndMsg {
-                code: ReplyCode::ParameterSyntaxError,
-                ..
-            }
-        ));
+        assert!(is_code(&err, ReplyCode::ParameterSyntaxError));
     }
 
     #[test]
@@ -558,24 +506,12 @@ mod tests {
     #[test]
     fn rejects_unbalanced_quotes() {
         let err = SendArgs::parse("\"unterminated").unwrap_err();
-        assert!(matches!(
-            err,
-            Reply::CodeAndMsg {
-                code: ReplyCode::ParameterSyntaxError,
-                ..
-            }
-        ));
+        assert!(is_code(&err, ReplyCode::ParameterSyntaxError));
     }
 
     #[test]
     fn rejects_missing_file_names() {
         let err = SendArgs::parse("--topic my-topic").unwrap_err();
-        assert!(matches!(
-            err,
-            Reply::CodeAndMsg {
-                code: ReplyCode::ParameterSyntaxError,
-                ..
-            }
-        ));
+        assert!(is_code(&err, ReplyCode::ParameterSyntaxError));
     }
 }

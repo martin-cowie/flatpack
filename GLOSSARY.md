@@ -17,8 +17,8 @@ One logged-in FTP connection, which publishes to Kafka as the identity establish
 _Avoid_: Connection (ambiguous with the Kafka connection)
 
 **Session topic**:
-The Kafka topic `SITE SEND` publishes to when given no `--topic`. It starts as `default_topic`, is changed by `SITE TOPIC <topic>`, and lasts only for the Session.
-_Avoid_: Current topic, selected topic
+The Kafka topic that `SITE SEND` publishes to when given no `--topic`. It starts as `default_topic`, is changed by `SITE TOPIC <topic>` (or `SITE TOPIC -c <topic>`, which creates the topic first), and lasts only for the Session.
+_Avoid_: Selected topic
 
 **Security protocol**:
 How the bridge talks to the Kafka cluster: `PLAINTEXT` (no authentication) or `SASL_PLAINTEXT` (SASL authentication, no encryption). Encrypted protocols are out of scope for now.

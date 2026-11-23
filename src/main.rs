@@ -2,7 +2,10 @@ mod auth;
 mod config;
 mod kafka;
 mod server_config;
+mod session_command;
 mod storage;
+#[cfg(test)]
+mod test_support;
 mod topics;
 
 use auth::KafkaAuthenticator;
@@ -11,6 +14,7 @@ use config::Config;
 use kafka::{KafkaSendHandler, SecurityProtocol};
 use libunftp::ServerBuilder;
 use server_config::LogLevel;
+use session_command::LoggedIn;
 use slog::{o, Drain};
 use std::sync::Arc;
 use storage::MemStorage;
@@ -49,7 +53,8 @@ async fn main() -> std::process::ExitCode {
         );
     }
 
-    let authenticator = KafkaAuthenticator::new(kafka_config.clone(), logger.clone());
+    let metadata_timeout = std::time::Duration::from_millis(kafka_config.message_timeout_ms);
+    let authenticator = KafkaAuthenticator::new(kafka_config, logger.clone());
     let user_detail_provider = authenticator.user_detail_provider();
 
     let server =
@@ -58,9 +63,9 @@ async fn main() -> std::process::ExitCode {
             .logger(logger.clone())
             .greeting("This is a test FTP server")
             .passive_ports(50000..=65535)
-            .site_command("send", KafkaSendHandler)
-            .site_command("topics", TopicsHandler)
-            .site_command("topic", TopicHandler)
+            .site_command("send", LoggedIn(KafkaSendHandler))
+            .site_command("topics", LoggedIn(TopicsHandler::new(metadata_timeout)))
+            .site_command("topic", LoggedIn(TopicHandler::new(metadata_timeout)))
             .build()
         {
             Ok(server) => server,
