@@ -118,6 +118,35 @@ fn listed_topics(topics: Vec<String>, pattern: Option<&str>) -> Vec<String> {
         .collect()
 }
 
+/// The lines of a `SITE TOPICS` reply: a header saying what is listed, the
+/// `topics` themselves, and a footer counting them.
+fn topics_listing(topics: &[String], pattern: Option<&str>) -> Vec<String> {
+    let header = match pattern {
+        Some(pattern) => format!("topics matching {pattern}"),
+        None => "all topics".to_string(),
+    };
+    let noun = if topics.len() == 1 { "topic" } else { "topics" };
+    let footer = format!("listed {} {noun}", with_thousands_separators(topics.len()));
+    let mut result = vec![header];
+    result.extend(topics.iter().cloned());
+    result.push(footer);
+    result
+}
+
+/// `number` written with a comma between each group of three digits: `1,234,567`.
+fn with_thousands_separators(number: usize) -> String {
+    let digits = number.to_string();
+    let first_group = digits.len() % 3;
+    let groups = digits.as_bytes()[first_group..]
+        .chunks(3)
+        .map(|group| std::str::from_utf8(group).unwrap());
+    std::iter::once(&digits[..first_group])
+        .filter(|group| !group.is_empty())
+        .chain(groups)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Checks `name` against Kafka's rules for topic names.
 ///
 /// # Errors
@@ -178,11 +207,10 @@ impl SessionCommand for TopicsHandler {
         match cluster_topics(user.producer(), self.timeout).await {
             Ok(topics) => {
                 let topics = listed_topics(topics, args.pattern.as_deref());
-                if topics.is_empty() {
-                    Reply::new(ReplyCode::FileStatus, "No matching topics")
-                } else {
-                    Reply::new_multiline(ReplyCode::FileStatus, topics)
-                }
+                Reply::new_multiline(
+                    ReplyCode::FileStatus,
+                    topics_listing(&topics, args.pattern.as_deref()),
+                )
             }
             Err(e) => Reply::new(ReplyCode::LocalError, &format!("Cannot list topics: {e}")),
         }
@@ -373,7 +401,10 @@ mod tests {
             panic!("expected a multi-line reply, got {reply:?}");
         };
         assert_eq!(code, ReplyCode::FileStatus);
-        assert_eq!(lines, vec!["alpha", "beta"]);
+        assert_eq!(
+            lines,
+            vec!["all topics", "alpha", "beta", "listed 2 topics"]
+        );
     }
 
     #[tokio::test]
@@ -393,7 +424,15 @@ mod tests {
         let Reply::MultiLine { lines, .. } = reply else {
             panic!("expected a multi-line reply, got {reply:?}");
         };
-        assert_eq!(lines, vec!["orders-eu", "orders-us"]);
+        assert_eq!(
+            lines,
+            vec![
+                "topics matching orders-*",
+                "orders-eu",
+                "orders-us",
+                "listed 2 topics"
+            ]
+        );
     }
 
     #[tokio::test]
@@ -407,7 +446,14 @@ mod tests {
 
         let reply = LoggedIn(TopicsHandler::new(TIMEOUT)).handle(&ctx).await;
 
-        assert!(is_code(&reply, ReplyCode::FileStatus));
+        let Reply::MultiLine { code, lines } = reply else {
+            panic!("expected a multi-line reply, got {reply:?}");
+        };
+        assert_eq!(code, ReplyCode::FileStatus);
+        assert_eq!(
+            lines,
+            vec!["topics matching nothing-matches", "listed 0 topics"]
+        );
     }
 
     #[tokio::test]
@@ -445,6 +491,27 @@ mod tests {
         let reply = LoggedIn(TopicHandler::new(TIMEOUT)).handle(&ctx).await;
         assert!(is_code(&reply, ReplyCode::LocalError));
         assert_eq!(session_topic_of(&ctx), "default-topic");
+    }
+
+    #[test]
+    fn the_listing_counts_one_topic_in_the_singular() {
+        assert_eq!(
+            topics_listing(&["alpha".to_string()], None),
+            vec!["all topics", "alpha", "listed 1 topic"]
+        );
+    }
+
+    #[test]
+    fn counts_are_written_with_thousands_separators() {
+        for (number, expected) in [
+            (0, "0"),
+            (999, "999"),
+            (1_000, "1,000"),
+            (12_345, "12,345"),
+            (1_234_567, "1,234,567"),
+        ] {
+            assert_eq!(with_thousands_separators(number), expected);
+        }
     }
 
     fn strings(items: &[&str]) -> Vec<String> {

@@ -127,7 +127,7 @@ impl KafkaConfig {
 #[command(no_binary_name = true)]
 struct SendArgs {
     /// Kafka topic to publish to (defaults to the configured default_topic)
-    #[arg(long)]
+    #[arg(short, long)]
     topic: Option<String>,
 
     /// Kafka message key (defaults to each file's name)
@@ -492,6 +492,12 @@ mod tests {
     fn parses_quoted_file_name_with_embedded_spaces() {
         let args = SendArgs::parse("\"my file.txt\"").unwrap();
         assert_eq!(args.file_names, vec!["my file.txt"]);
+    }
+
+    #[test]
+    fn accepts_short_topic_flag() {
+        let args = SendArgs::parse("-t my-topic f.txt").unwrap();
+        assert_eq!(args.topic, Some("my-topic".to_string()));
     }
 
     #[test]

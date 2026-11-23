@@ -5,17 +5,17 @@ uploaded files to [Kafka](https://kafka.apache.org/) on request.
 
 ## Features
 
-- FTP login is checked by Kafka: the FTP username and password are the user's Kafka credentials
-- Greeting message sent to every new session: `This is a test FTP server`
+- FTP authentication is handled by the Kafka cluster: the FTP username and password are the user's Kafka credentials
 - Each FTP session gets its own isolated in-memory storage, reset when the session ends
 - Supports upload (`STOR`), download (`RETR`), delete (`DELE`), and rename (`RNFR`/`RNTO`)
-- Files live in a single flat namespace — subdirectories (`MKD`/`RMD`) aren't supported
-- Custom `SITE SEND` command publishes one or more uploaded files to a Kafka topic
+- Files live in a single flat namespace — subdirectories (`MKD`/`RMD`) are not supported
+- Custom `SITE SEND` command publishes one or more uploaded files to a Kafka topic. Run `SITE SEND -h` for options
+- Custom `SITE TOPIC` command reports or sets the Session topic used by `SITE SEND`. Run `SITE TOPIC -h` for options
+- Custom `SITE TOPICS` command lists the topics on the cluster. Run `SITE TOPICS -h` for options
 
 ## Configuration
 
-Kafka settings are defined in `config.toml`, which is not committed to this repository
-(it's listed in `.gitignore`). Copy the example to get started:
+Kafka settings are defined in `config.toml`. Copy the example to get started:
 
 ```sh
 cp config.toml.example config.toml
@@ -35,7 +35,7 @@ required:
 |---|---|---|
 | `brokers` | Yes | Comma-separated `host:port` list; the server needs only one to be reachable |
 | `default_topic` | Yes | Topic a Session starts with; `SITE SEND` uses it until `SITE TOPIC` changes it |
-| `message_timeout_ms` | No (default `5000`) | How long to wait for a message's delivery |
+| `message_timeout_ms` | No (default `5000`) | How long to wait for a message's delivery, and for `SITE TOPICS` and `SITE TOPIC` to hear from the cluster |
 | `auth_timeout_ms` | No (default `5000`) | How long a login waits for Kafka to accept or reject the credentials |
 | `security_protocol` | No (default `PLAINTEXT`) | `PLAINTEXT` or `SASL_PLAINTEXT` |
 | `sasl_mechanism` | When `security_protocol` is `SASL_PLAINTEXT` | `PLAIN`, `SCRAM-SHA-256` or `SCRAM-SHA-512` |
@@ -48,7 +48,7 @@ An optional `[server]` table holds settings for the server itself:
 | `log_level` | No (default `info`) | Least severe messages logged: `trace`, `debug`, `info`, `warn` or `error` |
 
 The server won't start if `brokers` or `default_topic` is missing, if `sasl_mechanism` is missing under
-`SASL_PLAINTEXT`, or if `security_protocol` or `sasl_mechanism` has any other value.
+`SASL_PLAINTEXT`, or if `security_protocol` or `sasl_mechanism` has an unsupported value.
 
 ## Authentication
 
@@ -60,8 +60,8 @@ password the FTP client supplies, and the session then publishes to Kafka as tha
 - **`SASL_PLAINTEXT`**: the credentials are sent to Kafka using the configured mechanism. Prefer
   `SCRAM-SHA-256` or `SCRAM-SHA-512`, which never send the password to Kafka; `PLAIN` does.
 
-Traffic is not encrypted: FTP passwords cross the network in clear text until FTPS is added (#4), and
-Kafka messages are unencrypted until Kafka TLS is. Every login costs a round trip to the broker, and no
+Traffic is not encrypted: FTP passwords cross the network in clear text, and
+Kafka messages are unencrypted. Every login costs a round trip to the broker, and no
 logins succeed while the broker is unreachable.
 
 ## Running
@@ -90,7 +90,7 @@ lftp -u alice,password123 ftp://127.0.0.1:2121
 | `RETR <file>` | Download a file |
 | `DELE <file>` | Delete a file |
 | `RNFR`/`RNTO` | Rename a file |
-| `SITE SEND [--topic <topic>] [--key <key>] [--header <name>=<value>]... <file>...` | Publish one or more uploaded files to Kafka |
+| `SITE SEND [-t\|--topic <topic>] [--key <key>] [--header <name>=<value>]... <file>...` | Publish one or more uploaded files to Kafka |
 | `SITE TOPICS [<glob>]` | List the topics on the Kafka cluster, one per line |
 | `SITE TOPIC [-c] [<topic>]` | Report the Session topic, set it, or with `-c` create the topic and set it |
 
@@ -101,7 +101,8 @@ name. The topic is, in order of precedence: `--topic`, then the Session topic, t
 `SITE TOPICS` lists the cluster's topics, sorted, queried with the Session's Kafka credentials. An
 optional glob narrows the list: `*` matches any run of characters and `?` matches one, and the whole
 name must match (`SITE TOPICS 'orders-*'`). Internal topics, whose names start with `_`, are hidden
-unless the glob itself starts with `_`.
+unless the glob itself starts with `_`. The reply opens with `all topics` or `topics matching <glob>`
+and closes with `listed <n> topics`, with the count written with thousands separators.
 
 `SITE TOPIC` reports the Session topic, which starts as `default_topic`. `SITE TOPIC <topic>` sets it
 for the rest of the Session, and is refused with `550` if the topic does not exist on the cluster.
@@ -121,7 +122,7 @@ SITE SEND --header content-type=application/json --header "source=ftp gateway" a
 ### Example session
 
 ```
-220 This is a test FTP server
+220 ftp-server ready. Default topic: rust-topic. Use "SITE SEND file-name" to send file content to Kafka. All files uploaded by FTP are dropped at session close.
 USER alice
 331 Password Required
 PASS password123
@@ -153,12 +154,12 @@ spawns the real `ftp-server` binary and drives it as an FTP client would, over T
 `tests/kafka_mock_integration.rs`, which checks that `SITE SEND` delivers payload, key and headers to
 librdkafka's in-process mock Kafka cluster. None of these needs any external services.
 
-A further end-to-end test, `tests/kafka_integration.rs`, exercises `SITE SEND` against a real Kafka
-broker started via [testcontainers](https://testcontainers.com/). It requires a working Docker daemon,
-so it's excluded from the default run:
+Further end-to-end tests, `tests/kafka_integration.rs` and `tests/kafka_sasl_integration.rs`, run
+against a real Kafka broker started via [testcontainers](https://testcontainers.com/). They require a
+working Docker daemon, so they're excluded from the default run:
 
 ```sh
-cargo test --test kafka_integration -- --ignored
+cargo test --test kafka_integration --test kafka_sasl_integration -- --ignored
 ```
 
 To check coverage (via [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov)):
@@ -180,6 +181,6 @@ git config core.hooksPath .githooks
 
 `SITE SEND`, `SITE TOPICS` and `SITE TOPIC` are implemented with `SiteCommandHandler`s registered via
 `ServerBuilder::site_command("send", KafkaSendHandler)` and its siblings, a generic `SITE` subcommand extension point
-that was contributed upstream to [libunftp](https://github.com/bolcom/libunftp). 
+that was contributed upstream to [libunftp](https://github.com/bolcom/libunftp).
 
 Per-session storage isolation is achieved naturally: libunftp calls the storage factory (`MemStorage::new`) once per incoming TCP connection, so each session gets a fresh, empty `HashMap`.
