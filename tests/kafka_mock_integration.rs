@@ -23,8 +23,7 @@ fn site_send_publishes_the_file_with_its_name_as_key_and_no_headers() {
     let mut client = logged_in_client(&server);
     client.store("hello.txt", b"hello kafka");
 
-    let reply = client.command("SITE SEND hello.txt");
-    assert!(reply.starts_with('2'), "SITE SEND failed: {reply}");
+    client.command_expecting("2", "SITE SEND hello.txt");
 
     let message = kafka.consume_one();
     assert_eq!(message.key(), Some("hello.txt".as_bytes()));
@@ -39,11 +38,11 @@ fn site_send_attaches_headers_in_the_order_given() {
     let mut client = logged_in_client(&server);
     client.store("a.json", b"{}");
 
-    let reply = client.command(
+    client.command_expecting(
+        "2",
         "SITE SEND --header content-type=application/json --header \"source=ftp gateway\" \
          --header content-type=text/plain a.json",
     );
-    assert!(reply.starts_with('2'), "SITE SEND failed: {reply}");
 
     let message = kafka.consume_one();
     assert_eq!(
@@ -54,6 +53,80 @@ fn site_send_attaches_headers_in_the_order_given() {
             ("content-type".to_string(), "text/plain".to_string()),
         ]
     );
+}
+
+#[test]
+fn site_topic_reports_the_default_topic_on_a_fresh_session() {
+    let kafka = MockKafka::start();
+    let server = kafka.ftp_server();
+    let mut client = logged_in_client(&server);
+
+    let reply = client.command_expecting("200", "SITE TOPIC");
+
+    assert!(reply.contains(TOPIC), "{reply}");
+}
+
+#[test]
+fn site_topics_lists_the_clusters_topics() {
+    let kafka = MockKafka::start();
+    kafka.create_topic("another-topic");
+    let server = kafka.ftp_server();
+    let mut client = logged_in_client(&server);
+
+    let reply = client.command_expecting("213", "SITE TOPICS");
+
+    assert!(reply.contains("another-topic"), "{reply}");
+    assert!(reply.contains(TOPIC), "{reply}");
+}
+
+#[test]
+fn site_send_uses_the_session_topic_but_the_topic_option_still_wins() {
+    let kafka = MockKafka::start();
+    kafka.create_topic("session-topic");
+    kafka.create_topic("option-topic");
+    let server = kafka.ftp_server();
+    let mut client = logged_in_client(&server);
+    client.store("a.txt", b"from the session topic");
+    client.store("b.txt", b"from the option");
+
+    client.command_expecting("200", "SITE TOPIC session-topic");
+    client.command_expecting("200", "SITE SEND a.txt");
+    client.command_expecting("200", "SITE SEND --topic option-topic b.txt");
+
+    assert_eq!(
+        kafka.consume_one_from("session-topic").payload(),
+        Some("from the session topic".as_bytes())
+    );
+    assert_eq!(
+        kafka.consume_one_from("option-topic").payload(),
+        Some("from the option".as_bytes())
+    );
+}
+
+#[test]
+fn site_topic_refuses_a_topic_that_does_not_exist_and_keeps_the_current_one() {
+    let kafka = MockKafka::start();
+    let server = kafka.ftp_server();
+    let mut client = logged_in_client(&server);
+
+    client.command_expecting("5", "SITE TOPIC no-such-topic");
+    let current = client.command_expecting("200", "SITE TOPIC");
+
+    assert!(current.contains(TOPIC), "{current}");
+}
+
+#[test]
+fn the_session_topic_does_not_leak_into_other_sessions() {
+    let kafka = MockKafka::start();
+    kafka.create_topic("session-topic");
+    let server = kafka.ftp_server();
+    let mut first = logged_in_client(&server);
+    let mut second = logged_in_client(&server);
+
+    first.command_expecting("200", "SITE TOPIC session-topic");
+    let reply = second.command_expecting("200", "SITE TOPIC");
+
+    assert!(reply.contains(TOPIC), "{reply}");
 }
 
 /// A single-broker mock cluster with one single-partition topic, `TOPIC`.
@@ -70,6 +143,12 @@ impl MockKafka {
         MockKafka { cluster }
     }
 
+    fn create_topic(&self, name: &str) {
+        self.cluster
+            .create_topic(name, 1, 1)
+            .expect("failed to create the mock topic");
+    }
+
     /// Starts an FTP server whose `config.toml` points at this cluster.
     fn ftp_server(&self) -> TestServer {
         TestServer::start_with_config(&format!(
@@ -84,6 +163,11 @@ impl MockKafka {
 
     /// Reads the first message on `TOPIC`, failing the test after ten seconds.
     fn consume_one(&self) -> OwnedMessage {
+        self.consume_one_from(TOPIC)
+    }
+
+    /// Reads the first message on `topic`, failing the test after ten seconds.
+    fn consume_one_from(&self, topic: &str) -> OwnedMessage {
         let consumer: BaseConsumer = ClientConfig::new()
             .set("bootstrap.servers", self.cluster.bootstrap_servers())
             .set("group.id", "ftp-kafka-mock-test")
@@ -91,7 +175,7 @@ impl MockKafka {
             .expect("failed to create Kafka consumer");
         let mut partitions = TopicPartitionList::new();
         partitions
-            .add_partition_offset(TOPIC, 0, Offset::Beginning)
+            .add_partition_offset(topic, 0, Offset::Beginning)
             .unwrap();
         consumer.assign(&partitions).unwrap();
 
@@ -101,7 +185,7 @@ impl MockKafka {
                 return message.detach();
             }
         }
-        panic!("timed out waiting for a message on {TOPIC}");
+        panic!("timed out waiting for a message on {topic}");
     }
 }
 

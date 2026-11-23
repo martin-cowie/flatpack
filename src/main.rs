@@ -2,7 +2,11 @@ mod auth;
 mod config;
 mod kafka;
 mod server_config;
+mod session_command;
 mod storage;
+#[cfg(test)]
+mod test_support;
+mod topics;
 
 use auth::KafkaAuthenticator;
 use clap::Parser;
@@ -10,9 +14,13 @@ use config::Config;
 use kafka::{KafkaSendHandler, SecurityProtocol};
 use libunftp::ServerBuilder;
 use server_config::LogLevel;
+use session_command::LoggedIn;
 use slog::{o, Drain};
 use std::sync::Arc;
 use storage::MemStorage;
+use topics::{TopicHandler, TopicsHandler};
+
+const BIN_NAME: &str = env!("CARGO_BIN_NAME");
 
 #[derive(Parser)]
 struct Cli {
@@ -24,6 +32,13 @@ struct Cli {
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
+    let executable_name = std::env::args()
+        .next()
+        .and_then(|arg| {
+            let name = std::path::Path::new(&arg).file_name();
+            name.map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| BIN_NAME.into());
 
     let config = match Config::from_path(&cli.config) {
         Ok(config) => config,
@@ -47,16 +62,28 @@ async fn main() -> std::process::ExitCode {
         );
     }
 
-    let authenticator = KafkaAuthenticator::new(kafka_config.clone(), logger.clone());
+    let server_greeting: &'static str = Box::leak(
+        format!(
+            "{} ready. Default topic: {}. Use \"SITE SEND file-name\" to send file content to Kafka. All files uploaded by FTP are dropped at session close.",
+            executable_name,
+            kafka_config.default_topic
+        )
+        .into_boxed_str(),
+    );
+
+    let metadata_timeout = std::time::Duration::from_millis(kafka_config.message_timeout_ms);
+    let authenticator = KafkaAuthenticator::new(kafka_config, logger.clone());
     let user_detail_provider = authenticator.user_detail_provider();
 
     let server =
         match ServerBuilder::with_authenticator(Box::new(MemStorage::new), Arc::new(authenticator))
             .user_detail_provider(Arc::new(user_detail_provider))
             .logger(logger.clone())
-            .greeting("This is a test FTP server")
+            .greeting(server_greeting)
             .passive_ports(50000..=65535)
-            .site_command("send", KafkaSendHandler::new(kafka_config))
+            .site_command("send", LoggedIn(KafkaSendHandler))
+            .site_command("topics", LoggedIn(TopicsHandler::new(metadata_timeout)))
+            .site_command("topic", LoggedIn(TopicHandler::new(metadata_timeout)))
             .build()
         {
             Ok(server) => server,

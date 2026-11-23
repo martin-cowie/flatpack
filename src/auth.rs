@@ -1,12 +1,14 @@
 use async_trait::async_trait;
-use rdkafka::client::ClientContext;
+use rdkafka::admin::AdminClient;
+use rdkafka::client::{ClientContext, DefaultClientContext};
 use rdkafka::config::ClientConfig;
-use rdkafka::error::{KafkaError, RDKafkaErrorCode};
+use rdkafka::error::{KafkaError, KafkaResult, RDKafkaErrorCode};
 use rdkafka::producer::{FutureProducer, Producer};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::OnceCell;
 use unftp_core::auth::{
     AuthenticationError, Authenticator, Credentials, Principal, UserDetail, UserDetailError,
     UserDetailProvider,
@@ -66,25 +68,114 @@ pub struct KafkaAuthenticator {
     logger: slog::Logger,
 }
 
-type Handoff = Arc<Mutex<HashMap<String, Vec<SessionProducer>>>>;
+type Handoff = Arc<Mutex<HashMap<String, Vec<Login>>>>;
 
-/// A logged-in FTP user together with the Kafka producer their login established.
+/// What a login establishes for its Session: the Kafka producer, and the client
+/// config, password included, from which the Session can build further Kafka
+/// clients on demand.
+pub struct Login {
+    producer: SessionProducer,
+    client_config: ClientConfig,
+}
+
+impl Login {
+    /// Bundles a login's `producer` with the `client_config` it was created from.
+    ///
+    /// Returns the new login.
+    pub fn new(producer: SessionProducer, client_config: ClientConfig) -> Self {
+        Login {
+            producer,
+            client_config,
+        }
+    }
+}
+
+/// A logged-in FTP user together with the Kafka producer their login established
+/// and the Session topic.
 pub struct KafkaUser {
-    pub username: String,
-    pub producer: SessionProducer,
+    username: String,
+    producer: SessionProducer,
+    client_config: ClientConfig,
+    admin_client: OnceCell<AdminClient<DefaultClientContext>>,
+    session_topic: Mutex<String>,
+}
+
+impl KafkaUser {
+    /// Creates the user for a new Session.
+    ///
+    /// `username` is the name the client logged in with, `login` is what that
+    /// login established, and `topic` is the Session topic the Session starts with.
+    ///
+    /// Returns the new user.
+    pub fn new(username: String, login: Login, topic: String) -> Self {
+        KafkaUser {
+            username,
+            producer: login.producer,
+            client_config: login.client_config,
+            admin_client: OnceCell::new(),
+            session_topic: Mutex::new(topic),
+        }
+    }
+
+    /// The name the client logged in with.
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    /// The Kafka producer this Session's login established.
+    pub fn producer(&self) -> &SessionProducer {
+        &self.producer
+    }
+
+    /// The Kafka admin client for this Session, built from the login's
+    /// credentials the first time it is asked for.
+    ///
+    /// Returns the Session's admin client.
+    ///
+    /// # Errors
+    /// Returns the [`KafkaError`] when the client cannot be created.
+    pub async fn admin_client(&self) -> KafkaResult<&AdminClient<DefaultClientContext>> {
+        self.admin_client
+            .get_or_try_init(|| async { self.client_config.create() })
+            .await
+    }
+
+    /// The Session topic: the topic `SITE SEND` publishes to when it is given no `--topic`.
+    ///
+    /// Returns a copy, so the caller never holds the Session's lock.
+    pub fn session_topic(&self) -> String {
+        self.topic_guard().clone()
+    }
+
+    /// Makes `topic` the Session topic.
+    ///
+    /// `topic` replaces the previous Session topic for the rest of the Session.
+    pub fn set_session_topic(&self, topic: &str) {
+        *self.topic_guard() = topic.to_string();
+    }
+
+    /// Locks the Session topic, carrying on if a panic elsewhere poisoned the lock.
+    ///
+    /// Recovery is sound because the topic is only ever cloned or replaced whole,
+    /// so a panic cannot leave it half-written.
+    fn topic_guard(&self) -> std::sync::MutexGuard<'_, String> {
+        self.session_topic
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 impl std::fmt::Debug for KafkaUser {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KafkaUser")
-            .field("username", &self.username)
+            .field("username", &self.username())
             .finish()
     }
 }
 
 impl std::fmt::Display for KafkaUser {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.username)
+        f.write_str(self.username())
     }
 }
 
@@ -96,6 +187,7 @@ impl UserDetail for KafkaUser {}
 /// password, so they are interchangeable.
 pub struct KafkaUserDetailProvider {
     handoff: Handoff,
+    default_topic: String,
 }
 
 impl std::fmt::Debug for KafkaUserDetailProvider {
@@ -113,23 +205,21 @@ impl UserDetailProvider for KafkaUserDetailProvider {
         &self,
         principal: &Principal,
     ) -> Result<KafkaUser, UserDetailError> {
-        let producer =
+        let login =
             claim(&mut self.handoff.lock().unwrap(), &principal.username).ok_or_else(|| {
                 UserDetailError::Generic(format!("no login is waiting for {}", principal.username))
             })?;
-        Ok(KafkaUser {
-            username: principal.username.clone(),
-            producer,
-        })
+        Ok(KafkaUser::new(
+            principal.username.clone(),
+            login,
+            self.default_topic.clone(),
+        ))
     }
 }
 
-/// Takes one queued producer for `username`, removing the username's entry once
+/// Takes one queued login for `username`, removing the username's entry once
 /// its queue is empty so that the map holds only logins still awaiting a session.
-fn claim(
-    handoff: &mut HashMap<String, Vec<SessionProducer>>,
-    username: &str,
-) -> Option<SessionProducer> {
+fn claim(handoff: &mut HashMap<String, Vec<Login>>, username: &str) -> Option<Login> {
     let queue = handoff.get_mut(username)?;
     let result = queue.pop();
     if queue.is_empty() {
@@ -159,6 +249,7 @@ impl KafkaAuthenticator {
     pub fn user_detail_provider(&self) -> KafkaUserDetailProvider {
         KafkaUserDetailProvider {
             handoff: Arc::clone(&self.handoff),
+            default_topic: self.config.default_topic.clone(),
         }
     }
 
@@ -167,7 +258,7 @@ impl KafkaAuthenticator {
         logger: &slog::Logger,
         username: &str,
         password: &str,
-    ) -> Result<SessionProducer, ConnectError> {
+    ) -> Result<Login, ConnectError> {
         let mut client_config = ClientConfig::new();
         client_config
             .set("bootstrap.servers", &config.brokers)
@@ -192,7 +283,7 @@ impl KafkaAuthenticator {
         let mut last_logged = String::new();
         loop {
             match producer.client().fetch_metadata(None, PROBE_SLICE) {
-                Ok(_) => return Ok(producer),
+                Ok(_) => return Ok(Login::new(producer, client_config)),
                 Err(_) if events.rejected.load(Ordering::SeqCst) => {
                     return Err(ConnectError::Rejected)
                 }
@@ -233,7 +324,7 @@ impl Authenticator for KafkaAuthenticator {
         let logger = self.logger.clone();
         let username_owned = username.to_string();
         let password = creds.password.clone().unwrap_or_default();
-        let producer = tokio::task::spawn_blocking(move || {
+        let login = tokio::task::spawn_blocking(move || {
             Self::connect(&config, &logger, &username_owned, &password)
         })
         .await
@@ -249,7 +340,7 @@ impl Authenticator for KafkaAuthenticator {
             .unwrap()
             .entry(username.to_string())
             .or_default()
-            .push(producer);
+            .push(login);
         Ok(Principal {
             username: username.to_string(),
         })
@@ -335,9 +426,10 @@ mod tests {
 
         let user = provider.provide_user_detail(&principal).await.unwrap();
 
-        assert_eq!(user.username, "alice");
+        assert_eq!(user.username(), "alice");
+        assert_eq!(user.session_topic(), "test-topic");
         let metadata = user
-            .producer
+            .producer()
             .client()
             .fetch_metadata(None, Duration::from_secs(2));
         assert!(metadata.is_ok());
