@@ -225,6 +225,11 @@ impl std::fmt::Debug for KafkaAuthenticator {
 }
 
 impl KafkaAuthenticator {
+    /// Creates an authenticator that connects to the cluster described by `config`.
+    ///
+    /// Logins that `authenticate` accepts but no session claims within
+    /// `config.auth_timeout_ms` are dropped, releasing their Kafka connection.
+    /// Failures are logged to `logger`.
     pub fn new(config: KafkaConfig, logger: slog::Logger) -> Self {
         let handoff = Handoff::new(Duration::from_millis(config.auth_timeout_ms));
         KafkaAuthenticator {

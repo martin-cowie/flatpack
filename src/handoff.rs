@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 /// `claim`, so on an idle server an abandoned item lives until the next login.
 /// Queues are bounded by age and never by length, because a length cap would drop a
 /// legitimate concurrent login by the same user.
+/// This bounds the leak, not the rate at which logins can be made.
 ///
 /// Cloning yields another handle on the same queues.
 pub struct Handoff<T> {
@@ -22,9 +23,9 @@ pub struct Handoff<T> {
     time_limit: Duration,
 }
 
-type Queues<T> = HashMap<String, Vec<Waiting<T>>>;
+type Queues<T> = HashMap<String, Vec<Pending<T>>>;
 
-struct Waiting<T> {
+struct Pending<T> {
     deposited_at: Instant,
     item: T,
 }
@@ -65,48 +66,50 @@ impl<T> Handoff<T> {
     }
 
     fn deposit_at(&self, now: Instant, username: &str, item: T) {
-        let expired = {
-            let mut queues = self.lock();
-            let expired = self.remove_expired(&mut queues, now);
+        self.after_expiring(now, |queues| {
             queues
                 .entry(username.to_string())
                 .or_default()
-                .push(Waiting {
+                .push(Pending {
                     deposited_at: now,
                     item,
                 });
-            expired
+        });
+    }
+
+    fn claim_at(&self, now: Instant, username: &str) -> Option<T> {
+        self.after_expiring(now, |queues| self.pop(queues, username))
+    }
+
+    /// Drops the items that have outlived the time limit, then applies `act` to what
+    /// remains, and returns its result.
+    fn after_expiring<R>(&self, now: Instant, act: impl FnOnce(&mut Queues<T>) -> R) -> R {
+        let (result, expired) = {
+            let mut queues = self.lock();
+            let expired = self.remove_expired(&mut queues, now);
+            (act(&mut queues), expired)
         };
         // Dropping a Kafka producer can block while it shuts down, so expired items
         // must not be dropped while the lock is held.
         drop(expired);
-    }
-
-    fn claim_at(&self, now: Instant, username: &str) -> Option<T> {
-        let (result, expired) = {
-            let mut queues = self.lock();
-            let expired = self.remove_expired(&mut queues, now);
-            (Self::pop(&mut queues, username), expired)
-        };
-        drop(expired);
         result
     }
 
-    fn pop(queues: &mut Queues<T>, username: &str) -> Option<T> {
+    fn pop(&self, queues: &mut Queues<T>, username: &str) -> Option<T> {
         let queue = queues.get_mut(username)?;
-        let result = queue.pop().map(|waiting| waiting.item);
+        let result = queue.pop().map(|pending| pending.item);
         if queue.is_empty() {
             queues.remove(username);
         }
         result
     }
 
-    fn remove_expired(&self, queues: &mut Queues<T>, now: Instant) -> Vec<Waiting<T>> {
+    fn remove_expired(&self, queues: &mut Queues<T>, now: Instant) -> Vec<Pending<T>> {
         let mut result = Vec::new();
         queues.retain(|_, queue| {
             let (live, expired): (Vec<_>, Vec<_>) =
-                std::mem::take(queue).into_iter().partition(|waiting| {
-                    now.saturating_duration_since(waiting.deposited_at) < self.time_limit
+                std::mem::take(queue).into_iter().partition(|pending| {
+                    now.saturating_duration_since(pending.deposited_at) < self.time_limit
                 });
             *queue = live;
             result.extend(expired);
@@ -197,6 +200,46 @@ mod tests {
 
         assert!(!dropped.load(Ordering::SeqCst));
         assert!(handoff.claim_at(within_limit, "alice").is_some());
+    }
+
+    #[test]
+    fn an_item_is_claimable_until_the_instant_it_reaches_the_time_limit() {
+        let handoff = handoff();
+        let start = Instant::now();
+        unclaimed_item_deposited_at(&handoff, start);
+
+        let just_inside = start + TIME_LIMIT - Duration::from_millis(1);
+
+        assert!(handoff.claim_at(just_inside, "alice").is_some());
+    }
+
+    #[test]
+    fn an_item_that_has_reached_the_time_limit_is_expired() {
+        let handoff = handoff();
+        let start = Instant::now();
+        let dropped = unclaimed_item_deposited_at(&handoff, start);
+
+        let claimed = handoff.claim_at(start + TIME_LIMIT, "alice");
+
+        assert!(claimed.is_none());
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_claimed_item_belongs_to_the_claimer_and_is_not_dropped_by_later_sweeps() {
+        let handoff = handoff();
+        let start = Instant::now();
+        let dropped = unclaimed_item_deposited_at(&handoff, start);
+        let claimed = handoff.claim_at(start, "alice");
+
+        handoff.deposit_at(
+            start + TIME_LIMIT * 2,
+            "bob",
+            SetsFlagWhenDropped(Arc::default()),
+        );
+
+        assert!(claimed.is_some());
+        assert!(!dropped.load(Ordering::SeqCst));
     }
 
     #[test]
