@@ -72,7 +72,7 @@ async fn main() -> std::process::ExitCode {
         .into_boxed_str(),
     );
 
-    let metadata_timeout = std::time::Duration::from_millis(kafka_config.message_timeout_ms);
+    let metadata_timeout = kafka_config.message_timeout();
     let authenticator = KafkaAuthenticator::new(kafka_config, logger.clone());
     let user_detail_provider = authenticator.user_detail_provider();
 

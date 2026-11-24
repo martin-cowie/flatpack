@@ -231,7 +231,7 @@ impl KafkaAuthenticator {
     /// `config.auth_timeout_ms` are dropped, releasing their Kafka connection.
     /// Failures are logged to `logger`.
     pub fn new(config: KafkaConfig, logger: slog::Logger) -> Self {
-        let handoff = Handoff::new(Duration::from_millis(config.auth_timeout_ms));
+        let handoff = Handoff::new(config.auth_timeout());
         KafkaAuthenticator {
             config,
             handoff,
@@ -273,7 +273,7 @@ impl KafkaAuthenticator {
             .create_with_context(context)
             .map_err(|e| ConnectError::Unreachable(e.to_string()))?;
 
-        let deadline = Instant::now() + Duration::from_millis(config.auth_timeout_ms);
+        let deadline = Instant::now() + config.auth_timeout();
         let mut last_logged = String::new();
         loop {
             match producer.client().fetch_metadata(None, PROBE_SLICE) {

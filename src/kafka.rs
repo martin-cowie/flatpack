@@ -112,6 +112,17 @@ impl TryFrom<RawKafkaConfig> for KafkaConfig {
 }
 
 impl KafkaConfig {
+    /// How long to wait for a message's delivery, as configured by `message_timeout_ms`.
+    pub fn message_timeout(&self) -> Duration {
+        Duration::from_millis(self.message_timeout_ms)
+    }
+
+    /// How long a login waits for the cluster to accept or reject the credentials, as
+    /// configured by `auth_timeout_ms`.
+    pub fn auth_timeout(&self) -> Duration {
+        Duration::from_millis(self.auth_timeout_ms)
+    }
+
     fn default_message_timeout_ms() -> u64 {
         5000
     }
@@ -326,7 +337,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.kafka.brokers, "kafka1:9092,kafka2:9092");
         assert_eq!(config.kafka.default_topic, "custom-topic");
-        assert_eq!(config.kafka.message_timeout_ms, 10000);
+        assert_eq!(config.kafka.message_timeout(), Duration::from_secs(10));
     }
 
     #[test]
@@ -339,7 +350,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(config.kafka.message_timeout_ms, 5000);
+        assert_eq!(config.kafka.message_timeout(), Duration::from_secs(5));
     }
 
     #[test]
@@ -374,8 +385,8 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(default.kafka.auth_timeout_ms, 5000);
-        assert_eq!(overridden.kafka.auth_timeout_ms, 1500);
+        assert_eq!(default.kafka.auth_timeout(), Duration::from_secs(5));
+        assert_eq!(overridden.kafka.auth_timeout(), Duration::from_millis(1500));
     }
 
     #[test]
