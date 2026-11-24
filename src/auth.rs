@@ -228,10 +228,10 @@ impl KafkaAuthenticator {
     /// Creates an authenticator that connects to the cluster described by `config`.
     ///
     /// Logins that `authenticate` accepts but no session claims within
-    /// `config.auth_timeout_ms` are dropped, releasing their Kafka connection.
+    /// `config.auth_timeout()` are dropped, releasing their Kafka connection.
     /// Failures are logged to `logger`.
     pub fn new(config: KafkaConfig, logger: slog::Logger) -> Self {
-        let handoff = Handoff::new(Duration::from_millis(config.auth_timeout_ms));
+        let handoff = Handoff::new(config.auth_timeout());
         KafkaAuthenticator {
             config,
             handoff,
@@ -256,7 +256,10 @@ impl KafkaAuthenticator {
         let mut client_config = ClientConfig::new();
         client_config
             .set("bootstrap.servers", &config.brokers)
-            .set("message.timeout.ms", config.message_timeout_ms.to_string())
+            .set(
+                "message.timeout.ms",
+                config.message_timeout().as_millis().to_string(),
+            )
             .set(
                 "security.protocol",
                 config.security_protocol.as_librdkafka(),
@@ -273,7 +276,7 @@ impl KafkaAuthenticator {
             .create_with_context(context)
             .map_err(|e| ConnectError::Unreachable(e.to_string()))?;
 
-        let deadline = Instant::now() + Duration::from_millis(config.auth_timeout_ms);
+        let deadline = Instant::now() + config.auth_timeout();
         let mut last_logged = String::new();
         loop {
             match producer.client().fetch_metadata(None, PROBE_SLICE) {
