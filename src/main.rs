@@ -1,5 +1,6 @@
 mod auth;
 mod config;
+mod handoff;
 mod kafka;
 mod server_config;
 mod session_command;
