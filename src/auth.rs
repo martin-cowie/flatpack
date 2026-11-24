@@ -226,9 +226,10 @@ impl std::fmt::Debug for KafkaAuthenticator {
 
 impl KafkaAuthenticator {
     pub fn new(config: KafkaConfig, logger: slog::Logger) -> Self {
+        let handoff = Handoff::new(Duration::from_millis(config.auth_timeout_ms));
         KafkaAuthenticator {
             config,
-            handoff: Handoff::new(),
+            handoff,
             logger,
         }
     }
