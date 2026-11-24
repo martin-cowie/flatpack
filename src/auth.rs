@@ -4,7 +4,6 @@ use rdkafka::client::{ClientContext, DefaultClientContext};
 use rdkafka::config::ClientConfig;
 use rdkafka::error::{KafkaError, KafkaResult, RDKafkaErrorCode};
 use rdkafka::producer::{FutureProducer, Producer};
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -14,6 +13,7 @@ use unftp_core::auth::{
     UserDetailProvider,
 };
 
+use crate::handoff::Handoff;
 use crate::kafka::KafkaConfig;
 
 /// The Kafka producer a login establishes and its session keeps using.
@@ -64,11 +64,11 @@ const PROBE_SLICE: Duration = Duration::from_millis(100);
 /// `provide_user_detail` claims it for the session.
 pub struct KafkaAuthenticator {
     config: KafkaConfig,
-    handoff: Handoff,
+    handoff: LoginHandoff,
     logger: slog::Logger,
 }
 
-type Handoff = Arc<Mutex<HashMap<String, Vec<Login>>>>;
+type LoginHandoff = Handoff<Login>;
 
 /// What a login establishes for its Session: the Kafka producer, and the client
 /// config, password included, from which the Session can build further Kafka
@@ -186,7 +186,7 @@ impl UserDetail for KafkaUser {}
 /// Any queued producer for the username will do: Kafka gives one username one
 /// password, so they are interchangeable.
 pub struct KafkaUserDetailProvider {
-    handoff: Handoff,
+    handoff: LoginHandoff,
     default_topic: String,
 }
 
@@ -205,27 +205,15 @@ impl UserDetailProvider for KafkaUserDetailProvider {
         &self,
         principal: &Principal,
     ) -> Result<KafkaUser, UserDetailError> {
-        let login =
-            claim(&mut self.handoff.lock().unwrap(), &principal.username).ok_or_else(|| {
-                UserDetailError::Generic(format!("no login is waiting for {}", principal.username))
-            })?;
+        let login = self.handoff.claim(&principal.username).ok_or_else(|| {
+            UserDetailError::Generic(format!("no login is waiting for {}", principal.username))
+        })?;
         Ok(KafkaUser::new(
             principal.username.clone(),
             login,
             self.default_topic.clone(),
         ))
     }
-}
-
-/// Takes one queued login for `username`, removing the username's entry once
-/// its queue is empty so that the map holds only logins still awaiting a session.
-fn claim(handoff: &mut HashMap<String, Vec<Login>>, username: &str) -> Option<Login> {
-    let queue = handoff.get_mut(username)?;
-    let result = queue.pop();
-    if queue.is_empty() {
-        handoff.remove(username);
-    }
-    result
 }
 
 impl std::fmt::Debug for KafkaAuthenticator {
@@ -240,7 +228,7 @@ impl KafkaAuthenticator {
     pub fn new(config: KafkaConfig, logger: slog::Logger) -> Self {
         KafkaAuthenticator {
             config,
-            handoff: Arc::new(Mutex::new(HashMap::new())),
+            handoff: Handoff::new(),
             logger,
         }
     }
@@ -248,7 +236,7 @@ impl KafkaAuthenticator {
     /// Returns the provider that hands this authenticator's logins to their sessions.
     pub fn user_detail_provider(&self) -> KafkaUserDetailProvider {
         KafkaUserDetailProvider {
-            handoff: Arc::clone(&self.handoff),
+            handoff: self.handoff.clone(),
             default_topic: self.config.default_topic.clone(),
         }
     }
@@ -335,12 +323,7 @@ impl Authenticator for KafkaAuthenticator {
                 AuthenticationError::new(format!("Kafka is unreachable: {reason}"))
             }
         })?;
-        self.handoff
-            .lock()
-            .unwrap()
-            .entry(username.to_string())
-            .or_default()
-            .push(login);
+        self.handoff.deposit(username, login);
         Ok(Principal {
             username: username.to_string(),
         })
@@ -436,19 +419,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claiming_the_last_waiting_login_removes_the_username_from_the_handoff() {
-        let cluster = MockCluster::new(1).unwrap();
-        let authenticator = authenticator_for(&cluster);
-        let provider = authenticator.user_detail_provider();
-        for username in ["alice", "bob"] {
-            let principal = log_in(&authenticator, username).await;
-            provider.provide_user_detail(&principal).await.unwrap();
-        }
-
-        assert!(authenticator.handoff.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
     async fn concurrent_logins_for_one_username_each_get_a_producer() {
         let cluster = MockCluster::new(1).unwrap();
         let authenticator = authenticator_for(&cluster);
@@ -457,10 +427,8 @@ mod tests {
         let second = log_in(&authenticator, "alice").await;
 
         provider.provide_user_detail(&first).await.unwrap();
-        assert_eq!(authenticator.handoff.lock().unwrap()["alice"].len(), 1);
         provider.provide_user_detail(&second).await.unwrap();
 
-        assert!(authenticator.handoff.lock().unwrap().is_empty());
         assert!(provider.provide_user_detail(&first).await.is_err());
     }
 
