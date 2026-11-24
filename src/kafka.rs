@@ -337,7 +337,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.kafka.brokers, "kafka1:9092,kafka2:9092");
         assert_eq!(config.kafka.default_topic, "custom-topic");
-        assert_eq!(config.kafka.message_timeout(), Duration::from_secs(10));
+        assert_eq!(config.kafka.message_timeout_ms, 10000);
     }
 
     #[test]
@@ -350,7 +350,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(config.kafka.message_timeout(), Duration::from_secs(5));
+        assert_eq!(config.kafka.message_timeout_ms, 5000);
     }
 
     #[test]
@@ -385,8 +385,35 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(default.kafka.auth_timeout(), Duration::from_secs(5));
-        assert_eq!(overridden.kafka.auth_timeout(), Duration::from_millis(1500));
+        assert_eq!(default.kafka.auth_timeout_ms, 5000);
+        assert_eq!(overridden.kafka.auth_timeout_ms, 1500);
+    }
+
+    #[test]
+    fn kafka_config_timeouts_are_read_as_durations_from_their_millisecond_keys() {
+        let configured: Config = toml::from_str(
+            r#"
+                [kafka]
+                brokers = "my-broker:9092"
+                default_topic = "custom-topic"
+                message_timeout_ms = 10000
+                auth_timeout_ms = 1500
+            "#,
+        )
+        .unwrap();
+        let defaulted: Config = toml::from_str(
+            r#"
+                [kafka]
+                brokers = "my-broker:9092"
+                default_topic = "custom-topic"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(configured.kafka.message_timeout(), Duration::from_secs(10));
+        assert_eq!(configured.kafka.auth_timeout(), Duration::from_millis(1500));
+        assert_eq!(defaulted.kafka.message_timeout(), Duration::from_secs(5));
+        assert_eq!(defaulted.kafka.auth_timeout(), Duration::from_secs(5));
     }
 
     #[test]
