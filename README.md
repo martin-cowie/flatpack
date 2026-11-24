@@ -168,7 +168,7 @@ To check coverage (via [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-co
 cargo llvm-cov --show-missing-lines
 ```
 
-`cargo coverage`, an alias in `.cargo/config.toml`, fails if line coverage drops below 90%. CI runs it.
+`cargo coverage`, an alias in `.cargo/config.toml`, fails if line coverage drops below the threshold set in that alias. CI runs it in place of a plain `cargo test`.
 The Docker-based `#[ignore]` tests are not run in CI, so they stay a local, manual check.
 
 ## Pre-push checks
