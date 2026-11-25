@@ -41,7 +41,7 @@ async fn site_send_publishes_the_uploaded_file_to_kafka() {
 
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", &brokers)
-        .set("group.id", "ftp-kafka-integration-test")
+        .set("group.id", "flatpack-integration-test")
         .set("auto.offset.reset", "earliest")
         .create()
         .expect("failed to create Kafka consumer");

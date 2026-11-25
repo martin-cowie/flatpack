@@ -1,5 +1,5 @@
 [package]
-name = "ftp-kafka"
+name = "flatpack"
 version = "0.1.0"
 edition = "2021"
 description = "An in-memory FTP server that publishes uploaded files to Kafka via a custom SITE SEND command"
@@ -7,7 +7,7 @@ license = "Apache-2.0"
 repository = "https://github.com/martin-cowie/ftp-kafka"
 
 [[bin]]
-name = "ftp-kafka"
+name = "flatpack"
 path = "src/main.rs"
 
 [profile.release]

@@ -1,6 +1,6 @@
 # Manually testing authentication
 
-ftp-kafka has four authentication configurations. Each section below shows how to configure ftp-kafka,
+flatpack has four authentication configurations. Each section below shows how to configure flatpack,
 how to configure a matching [Redpanda](https://docs.redpanda.com/) broker, and how to check that it works.
 
 | # | `security_protocol` | `sasl_mechanism` | Who gets in |
@@ -39,7 +39,7 @@ The commands come from Redpanda's documentation, so check them against the Redpa
 
 ## 1. `PLAINTEXT`: no authentication
 
-### ftp-kafka
+### flatpack
 
 ```toml
 [kafka]
@@ -78,7 +78,7 @@ lftp -u anyone,anything -e 'put hello.txt; quote SITE SEND hello.txt; bye' ftp:/
 
 ## 2. `SASL_PLAINTEXT` with `PLAIN`
 
-### ftp-kafka
+### flatpack
 
 ```toml
 [kafka]
@@ -120,7 +120,7 @@ lftp -u mallory,alicepw -e 'ls; bye' ftp://127.0.0.1:2121
 
 ## 3. `SASL_PLAINTEXT` with `SCRAM-SHA-256`
 
-### ftp-kafka
+### flatpack
 
 ```toml
 [kafka]
@@ -152,7 +152,7 @@ Run the same three `lftp` commands as in section 2 and expect the same results.
 
 ## 4. `SASL_PLAINTEXT` with `SCRAM-SHA-512`
 
-### ftp-kafka
+### flatpack
 
 ```toml
 [kafka]
@@ -191,7 +191,7 @@ Run the same three `lftp` commands as in section 2.
 #### Extra check: a user on the other mechanism
 
 Redpanda stores each SCRAM user under one mechanism. A user created with `SCRAM-SHA-256` has no
-`SCRAM-SHA-512` credential, so it must be refused while ftp-kafka asks for `SCRAM-SHA-512`.
+`SCRAM-SHA-512` credential, so it must be refused while flatpack asks for `SCRAM-SHA-512`.
 
 1. Create `bob` with `SCRAM-SHA-256` only, and give them the same ACL as `alice`:
 
@@ -200,7 +200,7 @@ Redpanda stores each SCRAM user under one mechanism. A user created with `SCRAM-
    admin_rpk security acl create --allow-principal User:bob --operation write,describe --topic rust-topic
    ```
 
-2. With ftp-kafka still set to `SCRAM-SHA-512`, try to log in as `bob`:
+2. With flatpack still set to `SCRAM-SHA-512`, try to log in as `bob`:
 
    ```sh
    lftp -u bob,bobpw -e 'ls; bye' ftp://127.0.0.1:2121

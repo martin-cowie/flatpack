@@ -1,9 +1,9 @@
-<img src="docs/logo.svg" alt="ftp-kafka logo" width="200" align="right">
+<img src="docs/logo.svg" alt="flatpack logo" width="200" align="right">
 
-# ftp-kafka
+# FlaTPacK
 
 An in-memory FTP server built with [libunftp](https://github.com/bolcom/libunftp), which forwards
-uploaded files to [Kafka](https://kafka.apache.org/) on request.
+uploaded files to [Apache Kafka](https://kafka.apache.org/) on request.
 
 # Yes, but .. *why*?
 
@@ -131,26 +131,23 @@ SITE SEND --header content-type=application/json --header "source=ftp gateway" a
 
 ### Example session
 
-```
-220 ftp-kafka ready. Default topic: rust-topic. Use "SITE SEND file-name" to send file content to Kafka. All files uploaded by FTP are dropped at session close.
-USER alice
-331 Password Required
-PASS password123
-230 User logged in, proceed
-STOR hello.txt
-226 File successfully written
-SITE SEND hello.txt
-200 Sent file "hello.txt" as message to rust-topic. ...
-RNFR hello.txt
-350 Tell me, what would you like the new name to be?
-RNTO world.txt
-250 Renamed
-RETR world.txt
-226 Transfer complete
-DELE world.txt
-250 Successfully removed
-QUIT
-221 bye
+Using [lftp](https://lftp.yar.ru/), whose `site` command passes `SITE SEND` to the server:
+
+```console
+$ lftp -u alice,password123 -p 2121 localhost
+lftp alice@localhost:~> put hello.txt
+13 bytes transferred
+lftp alice@localhost:/> ls
+-rwxr-xr-x            1            0            0             13 Nov 25 15:38 hello.txt
+lftp alice@localhost:/> site SEND hello.txt
+200 Sent file "hello.txt" as message to rust-topic. Delivery { partition: 0, offset: 5, timestamp: CreateTime(1795621087855) }
+lftp alice@localhost:/> mv hello.txt world.txt
+rename successful
+lftp alice@localhost:/> get world.txt
+13 bytes transferred
+lftp alice@localhost:/> rm world.txt
+rm ok, `world.txt' removed
+lftp alice@localhost:/> bye
 ```
 
 ## Testing
@@ -160,7 +157,7 @@ cargo test
 ```
 
 Runs the unit tests (in `src/`) and a black-box integration suite (`tests/ftp_integration.rs`) that
-spawns the real `ftp-kafka` binary and drives it as an FTP client would, over TCP. It also runs
+spawns the real `flatpack` binary and drives it as an FTP client would, over TCP. It also runs
 `tests/kafka_mock_integration.rs`, which checks that `SITE SEND` delivers payload, key and headers to
 librdkafka's in-process mock Kafka cluster. None of these needs any external services.
 
@@ -198,6 +195,13 @@ that was contributed upstream to [libunftp](https://github.com/bolcom/libunftp).
 
 Per-session storage isolation is achieved naturally: libunftp calls the storage factory (`MemStorage::new`) once per incoming TCP connection, so each session gets a fresh, empty `HashMap`.
 
+## Acknowledgements
+
+flatpack stands on the work of the [unFTP](https://unftp.rs/) project. The FTP protocol is handled by its
+[libunftp](https://github.com/bolcom/libunftp) library and the companion
+[unftp-core](https://github.com/bolcom/libunftp/tree/master/crates/unftp-core) crate, both licensed
+under Apache-2.0. My profound thanks to their maintainers and contributors.
+
 ## Hire me
 
-I wrote ftp-kafka, and I am open to permanent or contract roles. If you need help with Rust, Java, TypeScript or Kafka, please [get in touch](https://www.linkedin.com/in/martin-cowie-7015731/).
+I wrote flatpack, and I am open to permanent or contract roles. If you need help with Rust, Java, TypeScript or Kafka, please [get in touch](https://www.linkedin.com/in/martin-cowie-7015731/).

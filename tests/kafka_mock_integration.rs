@@ -170,7 +170,7 @@ impl MockKafka {
     fn consume_one_from(&self, topic: &str) -> OwnedMessage {
         let consumer: BaseConsumer = ClientConfig::new()
             .set("bootstrap.servers", self.cluster.bootstrap_servers())
-            .set("group.id", "ftp-kafka-mock-test")
+            .set("group.id", "flatpack-mock-test")
             .create()
             .expect("failed to create Kafka consumer");
         let mut partitions = TopicPartitionList::new();

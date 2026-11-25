@@ -1,26 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="title">
-  <title id="title">ftp-kafka: files go in, topics come out</title>
+  <title id="title">flatpack: files, packed and shipped</title>
   <rect width="512" height="512" rx="96" fill="#17141f"/>
 
-  <path fill="#e5484d" d="M150 132C104 118 82 84 90 42c18 34 46 48 90 54z"/>
-  <path fill="#e5484d" d="M362 132c46-14 68-48 60-90-18 34-46 48-90 54z"/>
-
-  <g transform="translate(21 40) scale(0.88)">
-  <path fill="#f2efe9" d="M96 112h112l44 44v204H96z"/>
-  <path fill="#b9b4c7" d="M208 112l44 44h-44z"/>
-  <path fill="#17141f" d="M148 190l36 44h-22v74h-28v-74h-22z"/>
-
-  <g stroke="#f2efe9" stroke-width="14" fill="none">
-    <path d="M252 236h76M328 236V148M328 236v88M328 236l70-44M328 236l70 44"/>
+  <g fill="#c9975b" stroke="#17141f" stroke-width="4" stroke-linejoin="round">
+    <path d="M191 150l16-84h98l16 84z"/>
+    <path d="M191 280l16 84h98l16-84z"/>
+    <path d="M191 150l-92 16v98l92 16z"/>
+    <path d="M321 150l92 16v98l-92 16z"/>
   </g>
-  <g fill="#17141f" stroke="#f2efe9" stroke-width="14">
-    <circle cx="328" cy="236" r="34"/>
-    <circle cx="328" cy="140" r="24"/>
-    <circle cx="328" cy="332" r="24"/>
-    <circle cx="414" cy="182" r="24"/>
-    <circle cx="414" cy="290" r="24"/>
-  </g>
-  </g>
+  <path fill="#dcae72" d="M191 150h130v130H191z"/>
+  <path d="M191 150h130v130H191z" fill="none" stroke="#7a5530" stroke-width="4" stroke-dasharray="12 9"/>
 
-  <text x="256" y="446" text-anchor="middle" font-family="Menlo, Consolas, monospace" font-size="56" font-weight="700" fill="#f2efe9">ftp<tspan fill="#e5484d">&#215;</tspan>kafka</text>
+  <path fill="#f2efe9" d="M222 176h46l22 22v82h-68z" transform="translate(0 -11)"/>
+  <path fill="#b9b4c7" d="M268 165l22 22h-22z"/>
+  <path fill="#e5484d" d="M256 195l26 30h-15v30h-22v-30h-15z"/>
+
+  <path d="M368 300v54q0 10 10 10h46" transform="rotate(-15 396 332)" fill="none" stroke="#b9b4c7" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <text x="256" y="446" text-anchor="middle" font-family="Menlo, Consolas, monospace" font-size="64" font-weight="700" fill="#f2efe9"><tspan fill="#e5484d">F</tspan>la<tspan fill="#e5484d">TP</tspan>ac<tspan fill="#e5484d">K</tspan></text>
 </svg>

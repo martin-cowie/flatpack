@@ -1,4 +1,4 @@
-# FTP-Kafka Bridge
+# Flatpack
 
 An FTP server whose clients publish files to Kafka topics. It holds no user accounts of its own: Kafka decides who may log in.
 
