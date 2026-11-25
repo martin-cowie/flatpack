@@ -1,7 +1,17 @@
+<img src="docs/logo.svg" alt="ftp-kafka logo" width="200" align="right">
+
 # ftp-kafka
 
 An in-memory FTP server built with [libunftp](https://github.com/bolcom/libunftp), which forwards
 uploaded files to [Kafka](https://kafka.apache.org/) on request.
+
+# Yes, but .. *why*?
+
+I have been asked for this exact integration more than a few times, and thankfully each time my suggested alternative, the excellent [kcat](https://github.com/edenhill/kcat), was adopted instead. But the awful idea stuck with me: surely the unholy union of Kafka and FTP should be possible? IBM's [VAN FTP adapter](https://www.ibm.com/docs/en/ste/8.4.1?topic=overview-van-access-through-ftp-adapter) does something similar, after all. 
+
+So I built it. 
+
+In the unlikely case that you find this useful then give this a repo a star. 
 
 ## Features
 
@@ -187,3 +197,7 @@ git config core.hooksPath .githooks
 that was contributed upstream to [libunftp](https://github.com/bolcom/libunftp).
 
 Per-session storage isolation is achieved naturally: libunftp calls the storage factory (`MemStorage::new`) once per incoming TCP connection, so each session gets a fresh, empty `HashMap`.
+
+## Hire me
+
+I wrote ftp-kafka, and I am open to permanent or contract roles. If you need help with Rust, Java, TypeScript or Kafka, please [get in touch](https://www.linkedin.com/in/martin-cowie-7015731/).
