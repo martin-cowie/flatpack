@@ -5,18 +5,18 @@
 An in-memory FTP server built with [libunftp](https://github.com/bolcom/libunftp), which forwards
 uploaded files to [Apache Kafka](https://kafka.apache.org/) on request.
 
-# Yes, but .. *why*?
+## Yes, but .. *why*?
 
 I have been asked for this exact integration more than a few times, and thankfully each time my suggested alternative, the excellent [kcat](https://github.com/edenhill/kcat), was adopted instead. But the awful idea stuck with me: surely the unholy union of Kafka and FTP should be possible? IBM's [VAN FTP adapter](https://www.ibm.com/docs/en/ste/8.4.1?topic=overview-van-access-through-ftp-adapter) does something similar, after all. 
 
 So I built it. 
 
-In the unlikely case that you find this useful then give this a repo a star. 
+In the unlikely case that you find this useful then give this repo a star. 
 
 ## Features
 
 - FTP authentication is handled by the Kafka cluster: the FTP username and password are the user's Kafka credentials
-- Each FTP session gets its own isolated in-memory storage, reset when the session ends
+- Each FTP Session gets its own isolated in-memory storage, reset when the Session ends
 - Supports upload (`STOR`), download (`RETR`), delete (`DELE`), and rename (`RNFR`/`RNTO`)
 - Files live in a single flat namespace — subdirectories (`MKD`/`RMD`) are not supported
 - Custom `SITE SEND` command publishes one or more uploaded files to a Kafka topic. Run `SITE SEND -h` for options
@@ -63,7 +63,7 @@ The server won't start if `brokers` or `default_topic` is missing, if `sasl_mech
 ## Authentication
 
 The server keeps no user accounts. A login succeeds only if the Kafka cluster accepts the username and
-password the FTP client supplies, and the session then publishes to Kafka as that user.
+password the FTP client supplies, and the Session then publishes to Kafka as that user.
 
 - **`PLAINTEXT`**: the cluster has no authentication, so any username and password is accepted as long
   as the broker is reachable. The server logs a warning at startup.
@@ -104,9 +104,20 @@ lftp -u alice,password123 ftp://127.0.0.1:2121
 | `SITE TOPICS [<glob>]` | List the topics on the Kafka cluster, one per line |
 | `SITE TOPIC [-c] [<topic>]` | Report the Session topic, set it, or with `-c` create the topic and set it |
 
-`SITE SEND` publishes each named file as a separate Kafka message. `--key` defaults to each file's
-name. The topic is, in order of precedence: `--topic`, then the Session topic, then
-`config.toml`'s `[kafka] default_topic`.
+`SITE SEND` publishes each named file as a separate Kafka message, and replies with each delivery's partition, offset and timestamp.
+Each message's key is the originating file name. Use `--key <key>` to override that.
+The destination Kafka topic is, in order of precedence:
+1. The value of the `--topic` switch
+2. The Session topic
+3. `config.toml`'s `[kafka] default_topic`
+
+`--header` adds a Kafka message header and may be repeated; every message in the command gets the
+same headers, in the order given. The value is everything after the first `=`, so it may itself
+contain `=`. Quote an argument that contains spaces:
+
+```
+SITE SEND --header content-type=application/json --header "source=ftp gateway" a.json b.json
+```
 
 `SITE TOPICS` lists the cluster's topics, sorted, queried with the Session's Kafka credentials. An
 optional glob narrows the list: `*` matches any run of characters and `?` matches one, and the whole
@@ -120,14 +131,6 @@ for the rest of the Session, and is refused with `550` if the topic does not exi
 sets it; a name Kafka would reject gets `501`, and an existing topic or a refusal by the broker gets
 `550`. Creating a topic needs the Session's credentials to be allowed to, and keeps the login's
 Kafka credentials in memory for the Session (see ADR 0002).
-
-`--header` adds a Kafka message header and may be repeated; every message in the command gets the
-same headers, in the order given. The value is everything after the first `=`, so it may itself
-contain `=`. Quote an argument that contains spaces:
-
-```
-SITE SEND --header content-type=application/json --header "source=ftp gateway" a.json b.json
-```
 
 ### Example session
 
@@ -158,8 +161,9 @@ cargo test
 
 Runs the unit tests (in `src/`) and a black-box integration suite (`tests/ftp_integration.rs`) that
 spawns the real `flatpack` binary and drives it as an FTP client would, over TCP. It also runs
-`tests/kafka_mock_integration.rs`, which checks that `SITE SEND` delivers payload, key and headers to
-librdkafka's in-process mock Kafka cluster. None of these needs any external services.
+`tests/kafka_mock_integration.rs`, which runs the server against librdkafka's in-process mock Kafka
+cluster, checking that `SITE SEND` delivers payload, key and headers, and that `SITE TOPICS` and
+`SITE TOPIC` list the topics and set the Session topic. None of these needs any external services.
 
 Further end-to-end tests, `tests/kafka_integration.rs` and `tests/kafka_sasl_integration.rs`, run
 against a real Kafka broker started via [testcontainers](https://testcontainers.com/). They require a
@@ -187,17 +191,9 @@ Once per clone, enable the pre-push hook, which runs the same `cargo fmt --check
 git config core.hooksPath .githooks
 ```
 
-## Implementation notes
-
-`SITE SEND`, `SITE TOPICS` and `SITE TOPIC` are implemented with `SiteCommandHandler`s registered via
-`ServerBuilder::site_command("send", KafkaSendHandler)` and its siblings, a generic `SITE` subcommand extension point
-that was contributed upstream to [libunftp](https://github.com/bolcom/libunftp).
-
-Per-session storage isolation is achieved naturally: libunftp calls the storage factory (`MemStorage::new`) once per incoming TCP connection, so each session gets a fresh, empty `HashMap`.
-
 ## Acknowledgements
 
-flatpack stands on the work of the [unFTP](https://unftp.rs/) project. The FTP protocol is handled by its
+Flatpack stands on the work of the [unFTP](https://unftp.rs/) project. The FTP protocol is handled by its
 [libunftp](https://github.com/bolcom/libunftp) library and the companion
 [unftp-core](https://github.com/bolcom/libunftp/tree/master/crates/unftp-core) crate, both licensed
 under Apache-2.0. My profound thanks to their maintainers and contributors.
