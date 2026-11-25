@@ -1,4 +1,4 @@
-//! Black-box tests that spawn the real `ftp-server` binary and drive it as
+//! Black-box tests that spawn the real `ftp-kafka` binary and drive it as
 //! an FTP client would, over a real TCP connection. Unlike the unit tests in
 //! `src/`, these exercise `main.rs` end to end: CLI parsing, config loading,
 //! server startup, and the full command-handling stack.

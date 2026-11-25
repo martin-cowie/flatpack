@@ -1,4 +1,4 @@
-//! Shared black-box test harness: spawns the real `ftp-server` binary in a
+//! Shared black-box test harness: spawns the real `ftp-kafka` binary in a
 //! temp directory (so it picks up a throwaway `config.toml`) and drives it
 //! as a plain FTP client would, over real TCP.
 //!
@@ -60,12 +60,12 @@ impl TestServer {
         let port = free_port();
         std::fs::write(dir.path().join("config.toml"), with_port(config_toml, port)).unwrap();
 
-        let child = Command::new(env!("CARGO_BIN_EXE_ftp-server"))
+        let child = Command::new(env!("CARGO_BIN_EXE_ftp-kafka"))
             .current_dir(dir.path())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .expect("failed to spawn ftp-server binary");
+            .expect("failed to spawn ftp-kafka binary");
 
         let server = TestServer {
             _kafka: None,
@@ -81,12 +81,12 @@ impl TestServer {
     /// Spawns a second server in the same directory, reusing the same port -
     /// used to exercise the "address already in use" startup-failure path.
     pub fn start_conflicting(existing: &TestServer) -> Child {
-        Command::new(env!("CARGO_BIN_EXE_ftp-server"))
+        Command::new(env!("CARGO_BIN_EXE_ftp-kafka"))
             .current_dir(existing._dir.path())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("failed to spawn second ftp-server binary")
+            .expect("failed to spawn second ftp-kafka binary")
     }
 
     fn wait_until_accepting_connections(&self) {
@@ -97,7 +97,7 @@ impl TestServer {
             }
             if Instant::now() > deadline {
                 panic!(
-                    "ftp-server did not start listening on port {} in time",
+                    "ftp-kafka did not start listening on port {} in time",
                     self.port
                 );
             }
@@ -132,18 +132,18 @@ pub fn run_until_exit(config_toml: &str) -> std::process::Output {
     )
     .unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ftp-server"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ftp-kafka"))
         .current_dir(dir.path())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn ftp-server binary");
+        .expect("failed to spawn ftp-kafka binary");
 
     let deadline = Instant::now() + Duration::from_secs(5);
     while child.try_wait().unwrap().is_none() {
         if Instant::now() > deadline {
             let _ = child.kill();
-            panic!("ftp-server was expected to exit, but is still running");
+            panic!("ftp-kafka was expected to exit, but is still running");
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -171,12 +171,12 @@ pub fn log_until(config_toml: &str, trigger: impl FnOnce(u16), until: &str) -> S
     let port = free_port();
     std::fs::write(dir.path().join("config.toml"), with_port(config_toml, port)).unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ftp-server"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ftp-kafka"))
         .current_dir(dir.path())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn ftp-server binary");
+        .expect("failed to spawn ftp-kafka binary");
 
     let stderr = child.stderr.take().unwrap();
     let (lines, received) = std::sync::mpsc::channel();
@@ -212,7 +212,7 @@ pub fn log_until(config_toml: &str, trigger: impl FnOnce(u16), until: &str) -> S
     let _ = child.kill();
     let _ = child.wait();
 
-    assert!(found, "ftp-server never logged {until:?}; it logged: {log}");
+    assert!(found, "ftp-kafka never logged {until:?}; it logged: {log}");
     log
 }
 
@@ -223,7 +223,7 @@ fn wait_until_accepting_connections(port: u16) {
     while TcpStream::connect(("127.0.0.1", port)).is_err() {
         assert!(
             Instant::now() < deadline,
-            "ftp-server did not start accepting connections on port {port}"
+            "ftp-kafka did not start accepting connections on port {port}"
         );
         std::thread::sleep(Duration::from_millis(20));
     }

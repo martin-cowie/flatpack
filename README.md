@@ -1,4 +1,4 @@
-# ftp-server
+# ftp-kafka
 
 An in-memory FTP server built with [libunftp](https://github.com/bolcom/libunftp), which forwards
 uploaded files to [Kafka](https://kafka.apache.org/) on request.
@@ -122,7 +122,7 @@ SITE SEND --header content-type=application/json --header "source=ftp gateway" a
 ### Example session
 
 ```
-220 ftp-server ready. Default topic: rust-topic. Use "SITE SEND file-name" to send file content to Kafka. All files uploaded by FTP are dropped at session close.
+220 ftp-kafka ready. Default topic: rust-topic. Use "SITE SEND file-name" to send file content to Kafka. All files uploaded by FTP are dropped at session close.
 USER alice
 331 Password Required
 PASS password123
@@ -150,7 +150,7 @@ cargo test
 ```
 
 Runs the unit tests (in `src/`) and a black-box integration suite (`tests/ftp_integration.rs`) that
-spawns the real `ftp-server` binary and drives it as an FTP client would, over TCP. It also runs
+spawns the real `ftp-kafka` binary and drives it as an FTP client would, over TCP. It also runs
 `tests/kafka_mock_integration.rs`, which checks that `SITE SEND` delivers payload, key and headers to
 librdkafka's in-process mock Kafka cluster. None of these needs any external services.
 

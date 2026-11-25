@@ -137,13 +137,13 @@ mod tests {
 
     #[test]
     fn config_path_defaults_to_config_toml() {
-        let cli = Cli::try_parse_from(["ftp-server"]).unwrap();
+        let cli = Cli::try_parse_from(["ftp-kafka"]).unwrap();
         assert_eq!(cli.config, std::path::PathBuf::from("config.toml"));
     }
 
     #[test]
     fn config_path_can_be_given_on_the_command_line() {
-        let cli = Cli::try_parse_from(["ftp-server", "--config", "/etc/ftp-kafka.toml"]).unwrap();
+        let cli = Cli::try_parse_from(["ftp-kafka", "--config", "/etc/ftp-kafka.toml"]).unwrap();
         assert_eq!(cli.config, std::path::PathBuf::from("/etc/ftp-kafka.toml"));
     }
 }
