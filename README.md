@@ -2,6 +2,11 @@
 
 # FlaTPacK
 
+[![CI](https://github.com/martin-cowie/flatpack/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/martin-cowie/flatpack/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/martin-cowie/flatpack)](https://github.com/martin-cowie/flatpack/releases/latest)
+[![Licence](https://img.shields.io/github/license/martin-cowie/flatpack?label=licence)](LICENSE)
+![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS-lightgrey)
+
 An in-memory FTP server built with [libunftp](https://github.com/bolcom/libunftp), which forwards
 uploaded files to [Apache Kafka](https://kafka.apache.org/) on request.
 

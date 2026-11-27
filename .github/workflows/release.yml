@@ -14,7 +14,7 @@ jobs:
   create-release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Create draft release
         run: gh release create "$GITHUB_REF_NAME" --verify-tag --draft --notes-file "docs/releases/$GITHUB_REF_NAME.md"
         env:
@@ -32,7 +32,7 @@ jobs:
           - { os: macos-15, target: aarch64-apple-darwin }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.100.0
       - uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
         with:
