@@ -74,6 +74,32 @@ Traffic is not encrypted: FTP passwords cross the network in clear text, and
 Kafka messages are unencrypted. Every login costs a round trip to the broker, and no
 logins succeed while the broker is unreachable.
 
+## Building
+
+You need [Rust](https://rustup.rs/) (CI uses 1.100.0), and a few native tools and libraries, because
+librdkafka is compiled from source and linked against the system's OpenSSL.
+
+On Debian or Ubuntu:
+
+```sh
+sudo apt-get install g++ make pkg-config libssl-dev
+```
+
+On macOS, with [Homebrew](https://brew.sh/):
+
+```sh
+xcode-select --install
+brew install openssl pkg-config
+```
+
+Then:
+
+```sh
+cargo build --release
+```
+
+The binary is written to `target/release/flatpack`.
+
 ## Running
 
 ```sh
